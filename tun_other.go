@@ -9,7 +9,7 @@ import (
 	"universal-bypass-tool/transport"
 )
 
-var errTUNUnsupported = errors.New("utun L3 client is only supported on macOS")
+var errTUNUnsupported = errors.New("utun client is only supported on macOS")
 
 type TUNClient struct{}
 
@@ -23,6 +23,9 @@ func (c *TUNClient) SetupInterface() error   { return errTUNUnsupported }
 func (c *TUNClient) ConfigureDefault() error { return errTUNUnsupported }
 func (c *TUNClient) Start()                  {}
 func (c *TUNClient) Close() error            { return nil }
+func (c *TUNClient) SaveDefault() error      { return errTUNUnsupported }
+func (c *TUNClient) RestoreDefault()         {}
+func (c *TUNClient) purgeStaleHostRoutes()   {}
 
 type SocketWatcher struct{}
 
