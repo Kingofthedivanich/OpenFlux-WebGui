@@ -14,6 +14,7 @@ import (
 	"openflux/socks5"
 	"openflux/transport"
 	"openflux/transport/cupsonline"
+	"openflux/transport/mailru"
 	"openflux/transport/oneme"
 	"openflux/transport/yandex"
 	"openflux/tunnel"
@@ -86,7 +87,7 @@ func main() {
 
 	role := flag.String("role", roleClient, "client | exit | bench-send | bench-sink")
 	inbound := flag.String("inbound", "", "tun | socks5 (client only; default: tun on macOS, socks5 elsewhere)")
-	transportType := flag.String("transport", "yandex", "Transport type (yandex, vyandex, oneme, cupsonline)")
+	transportType := flag.String("transport", "yandex", "Transport type (yandex, vyandex, oneme, cupsonline, mailru)")
 	mode := flag.String("mode", "", "Exit-node mode: l3 (default, Linux only) or l4 (works everywhere)")
 
 	codec := flag.String("codec", codecBatched, "batched (default, zstd+coalescing) or legacy (per-packet LZ4)")
@@ -134,6 +135,7 @@ TRANSPORT
   -t, --transport=vyandex      Yandex.Volga over HTTP relay + WS.
   -t, --transport=oneme        MAX (VK) over WebRTC.
   -t, --transport=cupsonline   Cups.online interview rooms.
+  -t, --transport=mailru       Mail.ru Docs over WebSocket.
 
   -u, --url=<URL>              Document URL.
       --maxToken=<token>       MAX auth token (--transport=oneme).
@@ -289,6 +291,8 @@ DEPRECATED (removed in v2)
 		inner = oneme.NewOneMeTransport(*role == roleExit, maxToken, uidint, config)
 	case "cupsonline":
 		inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, *role != roleExit)
+	case "mailru":
+		inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
 	default:
 		log.Fatalf("Unknown transport type: %s", *transportType)
 	}
