@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	github.com/klauspost/compress v1.20.0
 	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/pion/webrtc/v3 v3.3.6
 	github.com/xjasonlyu/windivert-go v0.0.0-20201010013527-4239d0afa76f
