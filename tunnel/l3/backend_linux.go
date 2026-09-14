@@ -34,12 +34,19 @@ func newBackend() (L3Backend, error) {
 		syscall.Close(sendFd)
 		return nil, fmt.Errorf("l3: IP_HDRINCL: %w", err)
 	}
+	// Large send buffer: SOCK_RAW with IP_HDRINCL does not get kernel
+	// auto-tuning, so the default (208 KiB) caps BDP and causes drops
+	// at RTT ~100ms and >30 Mbps.
+	syscall.SetsockoptInt(sendFd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 16*1024*1024)
 
 	recvFd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_TCP)
 	if err != nil {
 		syscall.Close(sendFd)
 		return nil, fmt.Errorf("l3: recv socket: %w (need root or CAP_NET_RAW)", err)
 	}
+	// Large receive buffer for the same reason: SOCK_RAW has no auto-tuning,
+	// and the default 208 KiB is not enough at ~100ms RTT for 30+ Mbps.
+	syscall.SetsockoptInt(recvFd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 16*1024*1024)
 
 	b := &rawBackend{
 		sendFd: sendFd,
