@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# OpenFlux (universal-bypass-tool) — one image, two roles:
+# OpenFlux (openflux) — one image, two roles:
 #   client    — SOCKS5 proxy, no special privileges
 #   exit-node — raw sockets + RST-drop, needs NET_RAW/NET_ADMIN (see compose)
 # Role is selected at runtime by the entrypoint from ROLE=client|exit-node.

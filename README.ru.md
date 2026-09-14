@@ -40,7 +40,7 @@ Client (SOCKS5) --> Transport --> Exit Node --> Internet
 ```
 
 ## Требования
-1. Golang v. 1.26.3+ — требуется для сборки бинарника десктопного клиента / выходной ноды (universal-bypass-tool);
+1. Golang v. 1.26.3+ — требуется для сборки бинарника десктопного клиента / выходной ноды (openflux);
 2. Android Native Development Kit (NDK) v.27.0.12077973+ — требуется для сборки бинарника для Android-клиента;
 3. XCode v. 26.6+ — требуется для сборки бинарника для iOS-клиента;
 4. VPS / VDS выходная нода на Linux.
@@ -93,7 +93,7 @@ OpenFlux/
 
 ```bash
 go mod tidy
-go build -o universal-bypass-tool .
+go build -o openflux .
 ```
 
 ## Сборка для Android (клиентский бинарник)
@@ -119,12 +119,12 @@ export XCODE_PATH="<путь до вашего Xcode.app>" # опциональ�
 
 Запуск в proxy-режиме (по умолчанию):
 ```bash
-./universal-bypass-tool --exit-node --url "YOUR_YANDEX_DOC_URL" --debug
+./openflux --exit-node --url "YOUR_YANDEX_DOC_URL" --debug
 ```
 
 Запуск в raw-режиме (Linux, root):
 ```bash
-sudo ./universal-bypass-tool --exit-node --mode raw --local-ip 203.0.113.10 \
+sudo ./openflux --exit-node --mode raw --local-ip 203.0.113.10 \
     --url "YOUR_YANDEX_DOC_URL" --debug
 ```
 
@@ -132,7 +132,7 @@ sudo ./universal-bypass-tool --exit-node --mode raw --local-ip 203.0.113.10 \
 
 Команды для настройки десктопного клиента:
 ```bash
-./universal-bypass-tool --client --url "YOUR_YANDEX_DOC_URL" --socks5 :1080 --debug
+./openflux --client --url "YOUR_YANDEX_DOC_URL" --socks5 :1080 --debug
 ```
 
 Затем настройте SOCKS5-прокси в браузере на localhost:1080.
@@ -144,7 +144,7 @@ Cups.online — публичный сервис live-coding интервью. К
 **Выходная нода:** создаёт небольшой набор комнат на старте и печатает base64-список комнат, который клиент должен использовать:
 
 ```bash
-./universal-bypass-tool --exit-node --transport cupsonline --debug
+./openflux --exit-node --transport cupsonline --debug
 ```
 
 ```
@@ -156,7 +156,7 @@ eyJyb29tcyI6WyI0YTFh...base64...
 **Клиент:** вставьте напечатанный base64 в `--url`:
 
 ```bash
-./universal-bypass-tool --client --transport cupsonline \
+./openflux --client --transport cupsonline \
     --url "eyJyb29tcyI6WyI0YTFh...base64..." --socks5 :1080 --debug
 ```
 

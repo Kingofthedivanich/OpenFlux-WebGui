@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"universal-bypass-tool/transport"
+	"openflux/transport"
 )
 
 // A distinct end-of-stream marker the sink recognizes. 41 bytes; a random

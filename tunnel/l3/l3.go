@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/utils"
+	"openflux/transport"
+	"openflux/utils"
 )
 
 const clientIP = "10.10.10.2"

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"universal-bypass-tool/utils"
+	"openflux/utils"
 )
 
 // HostLearner periodically snapshots TCP connections of the running process

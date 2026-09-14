@@ -39,7 +39,7 @@ Client (SOCKS5) --> Transport --> Exit Node --> Internet
 ```
 
 ## Requirements
-1. Golang v. 1.26.3+ - is required for building desktop client / exit node binary (universal-bypass-tool);
+1. Golang v. 1.26.3+ - is required for building desktop client / exit node binary (openflux);
 2. Android Native Development Kit (NDK) v.27.0.12077973+ - is required for building Android client binary;
 3. XCode v. 26.6+ - is required for building iOS client binary;
 4. Linux VPS / VDS exit node.
@@ -95,7 +95,7 @@ OpenFlux/
 
 ```bash
 go mod tidy
-go build -o universal-bypass-tool .
+go build -o openflux .
 ```
 
 ## Build for Android (client binary)
@@ -121,12 +121,12 @@ The exit node runs a userspace TCP/IP stack (gvisor) in one of two modes:
 
 Run in proxy mode (default):
 ```bash
-./universal-bypass-tool --exit-node --url "YOUR_YANDEX_DOC_URL" --debug
+./openflux --exit-node --url "YOUR_YANDEX_DOC_URL" --debug
 ```
 
 Run in raw mode (Linux, root):
 ```bash
-sudo ./universal-bypass-tool --exit-node --mode raw --local-ip 203.0.113.10 \
+sudo ./openflux --exit-node --mode raw --local-ip 203.0.113.10 \
     --url "YOUR_YANDEX_DOC_URL" --debug
 ```
 
@@ -134,7 +134,7 @@ sudo ./universal-bypass-tool --exit-node --mode raw --local-ip 203.0.113.10 \
 
 Setup commands for desktop client:
 ```bash
-./universal-bypass-tool --client --url "YOUR_YANDEX_DOC_URL" --socks5 :1080 --debug
+./openflux --client --url "YOUR_YANDEX_DOC_URL" --socks5 :1080 --debug
 ```
 
 Then set up SOCKS5 proxy in your browser at localhost:1080.
@@ -146,7 +146,7 @@ Cups.online is a public live-coding interview service. Each interview room is a 
 **Exit node:** creates a small set of rooms at startup and prints a base64 room list that the client must use:
 
 ```bash
-./universal-bypass-tool --exit-node --transport cupsonline --debug
+./openflux --exit-node --transport cupsonline --debug
 ```
 
 ```
@@ -158,7 +158,7 @@ eyJyb29tcyI6WyI0YTFh...base64...
 **Client:** paste the printed base64 into `--url`:
 
 ```bash
-./universal-bypass-tool --client --transport cupsonline \
+./openflux --client --transport cupsonline \
     --url "eyJyb29tcyI6WyI0YTFh...base64..." --socks5 :1080 --debug
 ```
 

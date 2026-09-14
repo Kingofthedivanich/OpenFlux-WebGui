@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"universal-bypass-tool/transport"
+	"openflux/transport"
 )
 
 var errTUNUnsupported = errors.New("utun client is only supported on macOS")

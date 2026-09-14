@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"golang.org/x/sys/unix"
 
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/utils"
+	"openflux/transport"
+	"openflux/utils"
 )
 
 

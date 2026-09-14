@@ -8,7 +8,7 @@ import (
 	"sync"
 	"syscall"
 
-	"universal-bypass-tool/utils"
+	"openflux/utils"
 )
 
 type rawBackend struct {

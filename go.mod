@@ -1,4 +1,4 @@
-module universal-bypass-tool
+module openflux
 
 go 1.26.4
 

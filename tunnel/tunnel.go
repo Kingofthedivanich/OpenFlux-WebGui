@@ -15,8 +15,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/utils"
+	"openflux/transport"
+	"openflux/utils"
 )
 
 // ExitMode выбирает, как выходная нода общается с интернетом.

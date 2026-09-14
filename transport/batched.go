@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"universal-bypass-tool/utils"
+	"openflux/utils"
 )
 
 // Defaults for the coalescing layer. Tunable at runtime via env vars so the

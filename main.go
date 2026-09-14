@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"universal-bypass-tool/socks5"
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/transport/cupsonline"
-	"universal-bypass-tool/transport/oneme"
-	"universal-bypass-tool/transport/yandex"
-	"universal-bypass-tool/tunnel"
-	"universal-bypass-tool/utils"
+	"openflux/socks5"
+	"openflux/transport"
+	"openflux/transport/cupsonline"
+	"openflux/transport/oneme"
+	"openflux/transport/yandex"
+	"openflux/tunnel"
+	"openflux/utils"
 )
 
 var (

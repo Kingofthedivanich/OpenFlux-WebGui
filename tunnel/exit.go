@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"runtime"
 
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/tunnel/l3"
-	"universal-bypass-tool/utils"
+	"openflux/transport"
+	"openflux/tunnel/l3"
+	"openflux/utils"
 )
 
 type ExitNode interface {

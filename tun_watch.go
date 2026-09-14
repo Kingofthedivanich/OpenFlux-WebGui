@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"universal-bypass-tool/utils"
+	"openflux/utils"
 )
 
 // SocketWatcher watches the process's own outbound TCP connections and

@@ -1,6 +1,6 @@
 package tunnel
 
-import "universal-bypass-tool/transport"
+import "openflux/transport"
 
 type proxyExit struct {
 	trans transport.Transport
