@@ -685,6 +685,7 @@ func NewCupsonlineTransport(rawURL string, cfg transport.TransportConfig, isClie
 	return t
 }
 
+
 func (t *CupsonlineTransport) Start() error {
 	if t.clientErr != nil {
 		return t.clientErr

@@ -23,15 +23,20 @@ import (
 type ExitMode int
 
 const (
-	ExitModeProxy ExitMode = iota // gVisor TCP-терминация + net.Dial (по умолчанию, работает везде)
-	ExitModeRaw                   // raw sockets + SNAT (только Linux, требует root)
+	ExitModeProxy ExitMode = iota // gVisor TCP-терминация + net.Dial (fallback, работает везде)
+	ExitModeRaw                   // raw sockets + gVisor L3 forward (Linux, legacy)
+	ExitModeL3                    // чистый L3: SNAT/DNAT без gVisor (Linux/Windows)
 )
 
 func (m ExitMode) String() string {
-	if m == ExitModeRaw {
+	switch m {
+	case ExitModeRaw:
 		return "raw"
+	case ExitModeL3:
+		return "l3"
+	default:
+		return "proxy"
 	}
-	return "proxy"
 }
 
 // ParseExitMode разбирает строку из флага --mode.
@@ -41,8 +46,10 @@ func ParseExitMode(s string) (ExitMode, error) {
 		return ExitModeProxy, nil
 	case "raw":
 		return ExitModeRaw, nil
+	case "l3":
+		return ExitModeL3, nil
 	default:
-		return ExitModeProxy, fmt.Errorf("unknown mode %q (want proxy|raw)", s)
+		return ExitModeProxy, fmt.Errorf("unknown mode %q (want proxy|raw|l3)", s)
 	}
 }
 
