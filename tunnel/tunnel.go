@@ -23,33 +23,29 @@ import (
 type ExitMode int
 
 const (
-	ExitModeProxy ExitMode = iota // gVisor TCP-терминация + net.Dial (fallback, работает везде)
-	ExitModeRaw                   // raw sockets + gVisor L3 forward (Linux, legacy)
-	ExitModeL3                    // чистый L3: SNAT/DNAT без gVisor (Linux/Windows)
+	ExitModeL3 ExitMode = iota // L3: SNAT/DNAT без gVisor (Linux)
+	ExitModeL4                 // L4: gVisor TCP-терминация + net.Dial (работает везде)
 )
 
 func (m ExitMode) String() string {
 	switch m {
-	case ExitModeRaw:
-		return "raw"
 	case ExitModeL3:
 		return "l3"
 	default:
-		return "proxy"
+		return "l4"
 	}
 }
 
 // ParseExitMode разбирает строку из флага --mode.
 func ParseExitMode(s string) (ExitMode, error) {
 	switch s {
-	case "", "proxy":
-		return ExitModeProxy, nil
-	case "raw":
-		return ExitModeRaw, nil
+	case "", "l4", "proxy":
+		// "proxy" is a deprecated alias kept for one release.
+		return ExitModeL4, nil
 	case "l3":
 		return ExitModeL3, nil
 	default:
-		return ExitModeProxy, fmt.Errorf("unknown mode %q (want proxy|raw|l3)", s)
+		return ExitModeL4, fmt.Errorf("unknown mode %q (want l3|l4)", s)
 	}
 }
 
@@ -59,7 +55,6 @@ type TCPTunnel struct {
 	transport   transport.Transport
 	isExitNode  bool
 	exitMode    ExitMode
-	rawEP       *RawSocketEndpoint
 	startTime   time.Time
 	packetCount atomic.Uint64
 }
@@ -84,7 +79,7 @@ func SetTCPBuffers(s *stack.Stack) {
 }
 
 func NewTCPTunnel(trans transport.Transport, isExitNode bool) *TCPTunnel {
-	return NewTCPTunnelMode(trans, isExitNode, ExitModeProxy)
+	return NewTCPTunnelMode(trans, isExitNode, ExitModeL4)
 }
 
 func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode) *TCPTunnel {
@@ -117,11 +112,7 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 	}
 
 	if isExitNode {
-		if mode == ExitModeRaw {
-			t.setupExitNodeRaw(tunnelNIC)
-		} else {
-			t.setupExitNodeProxy(tunnelNIC)
-		}
+		t.setupExitNodeProxy(tunnelNIC)
 	} else {
 		t.setupClient(tunnelNIC)
 	}
@@ -191,61 +182,6 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	})
 }
 
-// ---- exit node: raw (Linux only) ----
-
-func (t *TCPTunnel) setupExitNodeRaw(tunnelNIC tcpip.NICID) {
-	localIP := getLocalIP()
-	utils.Debugf("[TUNNEL] EXIT NODE - raw mode, local IP: %s", localIP)
-
-	rawEP, err := NewRawSocketEndpoint(tcpip.NICID(2))
-	if err != nil {
-		utils.Debugf("[TUNNEL] raw socket error (mode raw requires root on Linux): %v", err)
-		utils.Debugf("[TUNNEL] falling back to proxy mode")
-		t.exitMode = ExitModeProxy
-		t.setupExitNodeProxy(tunnelNIC)
-		return
-	}
-
-	t.rawEP = rawEP
-	rawEP.SetTransportSender(func(data []byte) {
-		if err := t.transport.Send(data); err != nil {
-			utils.Debugf("[TUNNEL] trans.Send error: %v", err)
-		}
-	})
-
-	internetNIC := tcpip.NICID(2)
-	if err := t.gvisorStack.CreateNIC(internetNIC, rawEP); err != nil {
-		utils.Debugf("[TUNNEL] CreateNIC internet error: %v", err)
-		return
-	}
-
-	var ipBytes [4]byte
-	fmt.Sscanf(localIP, "%d.%d.%d.%d", &ipBytes[0], &ipBytes[1], &ipBytes[2], &ipBytes[3])
-	internetAddr := tcpip.AddrFrom4(ipBytes)
-	t.gvisorStack.AddProtocolAddress(internetNIC, tcpip.ProtocolAddress{
-		Protocol: ipv4.ProtocolNumber,
-		AddressWithPrefix: tcpip.AddressWithPrefix{
-			Address:   internetAddr,
-			PrefixLen: 24,
-		},
-	}, stack.AddressProperties{})
-
-	t.gvisorStack.SetForwardingDefaultAndAllNICs(ipv4.ProtocolNumber, true)
-	t.gvisorStack.AddRoute(tcpip.Route{
-		Destination: header.IPv4EmptySubnet,
-		NIC:         internetNIC,
-	})
-
-	tunnelSubnet := tcpip.AddressWithPrefix{
-		Address:   tcpip.AddrFrom4([4]byte{10, 10, 10, 0}),
-		PrefixLen: 24,
-	}.Subnet()
-	t.gvisorStack.AddRoute(tcpip.Route{
-		Destination: tunnelSubnet,
-		NIC:         tunnelNIC,
-	})
-}
-
 // ---- client ----
 
 func (t *TCPTunnel) setupClient(tunnelNIC tcpip.NICID) {
@@ -277,7 +213,7 @@ func (t *TCPTunnel) DialTCP(address string) (net.Conn, error) {
 	utils.Debugf("[TUNNEL] DialTCP %s -> %s:%d", address, ip.String(), tcpAddr.Port)
 
 	nic := tcpip.NICID(1)
-	if t.isExitNode && t.exitMode == ExitModeRaw {
+	if t.isExitNode && false {
 		nic = tcpip.NICID(2)
 	}
 

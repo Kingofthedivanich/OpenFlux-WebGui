@@ -24,9 +24,10 @@ func NewExitNode(trans transport.Transport, mode string) (ExitNode, error) {
 		}
 		utils.Debugf("[EXIT] using L3 (platform=%s)", runtime.GOOS)
 		return node, nil
-	case "proxy", "raw", "":
+	case "l4", "proxy", "":
+		// "proxy" is a deprecated alias kept for one release.
 		return newProxyExit(trans), nil
 	default:
-		return nil, fmt.Errorf("unknown exit mode %q", mode)
+		return nil, fmt.Errorf("unknown exit mode %q (want l3|l4)", mode)
 	}
 }
