@@ -2,15 +2,24 @@
 
 [English](README.md) | **Русский**
 
-Исследовательский инструмент сетевого стека. TCP-туннель с подключаемыми транспортами.
+Исследовательский инструмент сетевого стека. TCP-туннель с подключаемыми
+транспортами, батчированным zstd-кодеком и L3-режимом выходной ноды.
 
 # Отказ от ответственности
 
-Автор OpenFlux **не призывает** использовать данный проект для обхода блокировок или нарушения правил каких-либо платформ, а также **не несёт ответственности** за финальные сценарии использования утилиты пользователями в реальной жизни или сети Интернет. Любые специфические технические особенности приложения — не более чем **архитектурное совпадение**, созданное **без какого-либо умысла**.
+Автор OpenFlux **не призывает** использовать данный проект для обхода
+блокировок или нарушения правил каких-либо платформ, а также **не несёт
+ответственности** за финальные сценарии использования утилиты пользователями
+в реальной жизни или сети Интернет. Любые специфические технические
+особенности приложения - не более чем **архитектурное совпадение**, созданное
+**без какого-либо умысла**.
 
-Проект является **полностью некоммерческим**, не содержит **платных функций, скрытых подписок или коммерческой выгоды**.
+Проект является **полностью некоммерческим**, не содержит **платных функций,
+скрытых подписок или коммерческой выгоды**.
 
-Автор **не несёт ответственности** за форки, модификации и производные версии OpenFlux, созданные третьими лицами. Любые изменения, добавленные в форк, являются ответственностью его автора.
+Автор **не несёт ответственности** за форки, модификации и производные
+версии OpenFlux, созданные третьими лицами. Любые изменения, добавленные
+в форк, являются ответственностью его автора.
 
 Автор **не несёт ответственности** за:
 
@@ -19,186 +28,254 @@
 - Ущерб, возникший в результате работы производных версий
 - Нарушения, совершённые с использованием форков
 
-Оригинальный код предоставляется **как есть** («as is»), **без каких-либо гарантий**.
+Оригинальный код предоставляется **как есть** («as is»), **без каких-либо
+гарантий**.
 
 ## Клиенты
 
 | Платформа | Скачать | Примечания |
 |-----------|---------|------------|
+| **macOS**   | сборка из исходников | CLI + utun L3-клиент (--tun) |
+| **Linux**   | сборка из исходников | CLI-клиент / выходная нода |
+| **Windows** | сборка из исходников | CLI-клиент / выходная нода (proxy) |
 | **Android** | [Релизы OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid) | Отдельный APK |
-| **iOS** | [TestFlight бета](https://testflight.apple.com/join/BwnAcdus) | Системный VPN через Network Extension |
+| **iOS**     | [TestFlight бета](https://testflight.apple.com/join/BwnAcdus) | Системный VPN через Network Extension |
 
-> **iOS-приложение** сделано [@saharev1](https://github.com/saharev1) — полноценный iOS-клиент, пайплайн TestFlight, системный VPN, DNS-over-TLS и множество фиксов стабильности. ОГРОМНОЕ спасибо! 🙏
+> **iOS-приложение** сделано [@saharev1](https://github.com/saharev1) -
+> полноценный iOS-клиент, пайплайн TestFlight, системный VPN, DNS-over-TLS
+> и множество фиксов стабильности. ОГРОМНОЕ спасибо!
 >
-> **Android-приложение** — [p1neappleXpress/OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid).
+> **Android-приложение** - [p1neappleXpress/OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid).
 
----
+## Архитектура
 
-## Обзор
-```
-Client (SOCKS5) --> Transport --> Exit Node --> Internet
-```
+macOS client (utun)    --> Транспорт --> Выходная нода (L3) --> Интернет
+Linux/Windows client   --> Транспорт --> Выходная нода (L3) --> Интернет
+iOS packet tunnel      --> Транспорт --> Выходная нода (L3) --> Интернет
+Android client         --> Транспорт --> Выходная нода (L3) --> Интернет
+
+Выходная нода ничего не терминирует: она форвардит сырые IP-пакеты с
+SNAT/DNAT (conntrack + фильтр по egress-IP). Одно TCP-соединение end-to-end
+между клиентом и реальным сервером.
+
+Клиент терминирует TCP локально (gVisor, utun или NEPacketTunnelProvider),
+отправляет сырые IP-пакеты в транспорт. Выходная нода переписывает
+src/dst-адреса и форвардит - TCP-состояние она не видит никогда.
+
+## Ключевые особенности
+
+- **Подключаемые транспорты** - Yandex.Docs (WS), Yandex Volga (HTTP relay),
+  MAX/OneMe (WebRTC DataChannel), Cups.online (Centrifugo-комнаты).
+- **Батчинг + zstd** - склеивает множество туннельных пакетов в одно
+  транспортное сообщение. Меньше сообщений в канале, выше скорость. См.
+  transport/batched.go и transport/framing.go.
+- **L3-выход** - нода в режиме --mode l3 форвардит сырые IPv4-пакеты через
+  SOCK_RAW (Linux) или WinDivert (Windows). Без userspace TCP-стека, без
+  двойной терминации.
+- **macOS utun-клиент** - --client --tun (только macOS). Создаёт utun-
+  интерфейс, следит за своими сокетами и ставит bypass-маршруты, затем
+  забирает default-маршрут. Никакого SOCKS5, никакого gVisor.
+- **Legacy fallback** - --legacy возвращает транспорт к старому кодеку
+  с per-packet LZ4 (совместим со старыми клиентами).
+- **Режимы бенчмарка** - --bench-send N / --bench-sink измеряют чистый
+  goodput через транспорт, не задевая сеть хоста.
 
 ## Требования
-1. Golang v. 1.26.3+ — требуется для сборки бинарника десктопного клиента / выходной ноды (openflux);
-2. Android Native Development Kit (NDK) v.27.0.12077973+ — требуется для сборки бинарника для Android-клиента;
-3. XCode v. 26.6+ — требуется для сборки бинарника для iOS-клиента;
-4. VPS / VDS выходная нода на Linux.
 
-## Обзор
-
-TCP-пакеты передаются через Transport. На данный момент доступны три транспорта:
-1. Yandex — отправляет пакеты через курсорные сообщения Yandex Docs;
-2. Max — отправляет пакеты через WebRTC DataChannel.
-   - **Не использовать** основной или важный MAX-аккаунт.
-   - **Не использовать** аккаунт, удаление или потеря доступа к которому критичны.
-   - Использование через **внешний VPS** может привести к **ограничению аккаунта**.
-   - **Ограничение может сохраняться** после остановки OpenFlux.
-   - MAX transport следует считать **экспериментальным** до выяснения механизма блокировки.
-3. Cups.online — отправляет пакеты через комнаты live-coding интервью (каналы Centrifugo).
-   - Cups.online — публичный сервис интервью; созданные комнаты открыты любому, кто знает их UUID.
-   - Используйте --encryption-key-file, если важна конфиденциальность.
-   - Не злоупотребляйте эндпоинтом создания комнат; выходная нода создаёт небольшое фиксированное число комнат (по умолчанию 4) на старте и держит их всю сессию.
-
-
-Клиентская часть запускает SOCKS5-прокси, выходная нода декапсулирует и пересылает пакеты в пункт назначения.
+1. **Go 1.26.3+** - для сборки бинарника десктопного клиента / выходной ноды.
+2. **Android NDK r27+** - для сборки бинарника Android-клиента.
+3. **Xcode 26.6+** - для сборки бинарника iOS-клиента.
+4. **Linux VPS / VDS** для выходной ноды (или запуск exit локально через
+   QEMU, см. ниже).
 
 ## Структура
 
-```
 OpenFlux/
-├── main.go                     # Точка входа CLI (клиент / выходная нода)
-├── export_ios.go               # cgo-мост для статической библиотеки iOS (build tag: ios)
-├── transport/
-│   ├── transport.go            # Интерфейс Transport
-│   ├── compressor.go           # Обёртка сжатия
-│   ├── yandex/                 # Бэкенд Yandex Docs
-│   ├── oneme/                  # Бэкенд MAX Messenger
-│   └── cupsonline/             # Бэкенд Cups.online (комнаты интервью)
-├── tunnel/
-│   ├── tunnel.go               # Ядро TCP-тоннеля (proxy + raw режимы)
-│   ├── endpoint.go             # Виртуальный NIC
-│   ├── rawsocket_linux.go      # Raw-сокет (Linux, root)
-│   └── rawsocket_{darwin,windows}.go  # stubs (raw не поддерживается)
-├── socks5/                     # SOCKS5-сервер
-├── network/                    # Контрольные суммы, разбор пакетов
-├── utils/                      # Логирование
-├── ios-app/                    # iOS-клиент на SwiftUI (XcodeGen), линкует liboflux.a
-├── build_ios.sh                # Сборка статической библиотеки iOS (liboflux.a)
-├── build_ios_app.sh            # Сборка + архив + экспорт IPA приложения iOS
-└── build_android.sh            # Сборка клиентского бинарника Android
-```
+  main.go                          # Точка входа CLI (клиент / exit-node / бенчи)
+  bench.go                         # Хелперы бенчмарка (--bench-send/--bench-sink)
+  tun_darwin.go                    # macOS utun L3-клиент
+  tun_watch.go                     # Watcher сокетов для bypass-маршрутов
+  tun_other.go                     # Заглушки для не-darwin платформ
+  export_ios.go                    # cgo-мост для iOS-статической библиотеки
+  transport/
+    transport.go                   # Интерфейс Transport
+    batched.go                     # BatchedTransport (склейка + zstd)
+    framing.go                     # Wire-формат батчированных кадров
+    compressor.go                  # Legacy per-packet LZ4-кодек
+    encrypted.go                   # Опциональная AES-256-GCM обёртка
+    yandex/                        # Бэкенды Yandex.Docs + Volga
+    oneme/                         # Бэкенд MAX Messenger
+    cupsonline/                    # Бэкенд Cups.online
+  tunnel/
+    tunnel.go                      # Клиентский туннель (gVisor + TunnelLinkEndpoint)
+    endpoint.go                    # Виртуальный NIC (клиент)
+    exit.go                        # Диспетчер NewExitNode (l3 / proxy)
+    proxy_exit.go                  # Legacy proxy-exit (gVisor + net.Dial)
+    l3/                            # L3-выходная нода
+      l3.go                        # L3Exit: SNAT/DNAT, conntrack, фильтр egress
+      backend.go                   # Интерфейс L3Backend
+      backend_linux.go             # SOCK_RAW (Linux)
+      backend_windows.go           # WinDivert (stub)
+      backend_other.go             # Заглушка для неподдерживаемых платформ
+      conntrack.go                 # Таблица conntrack
+      flow.go                      # Flow-ключи, SNAT/DNAT, checksums
+    rawsocket_linux.go             # Legacy raw exit (оставлен для референса)
+    rawsocket_{darwin,windows}.go
+  socks5/                          # SOCKS5-сервер (fallback на клиенте)
+  network/                         # Контрольные суммы, разбор пакетов
+  utils/                           # Логирование
+  ios-app/                         # iOS-клиент на SwiftUI (XcodeGen)
+  build_ios.sh                     # Сборка статической библиотеки iOS (liboflux.a)
+  build_ios_app.sh                 # Сборка + архив + экспорт IPA iOS
+  build_android.sh                 # Сборка клиентского бинарника Android
+  scripts/
+    cleanup-utun.sh                # Удалить stale-маршруты utun (macOS)
+    build-flx-linux-img.sh         # Сборка минимального Alpine rootfs для QEMU
 
-## Сборка (бинарник десктоп-клиента / выходной ноды)
+## Сборка
 
-```bash
 go mod tidy
 go build -o openflux .
-```
 
-## Сборка для Android (клиентский бинарник)
-```bash
-export ANDROID_NDK_HOME=<путь до вашего Android NDK>
-./build_android.sh
-```
+Кросс-сборка для выходной ноды (Linux amd64), stripped:
 
-## Сборка для iOS (клиентский бинарник)
-```bash
-export XCODE_PATH="<путь до вашего Xcode.app>" # опционально, по умолчанию /Applications/Xcode.app
-./build_ios.sh
-```
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags=\"-s -w\" -trimpath -o openflux-linux .
 
 ## Использование
 
-### 1. Настройка выходной ноды
+### Выходная нода (Linux, L3-режим)
 
-Выходная нода запускает userspace TCP/IP-стек (gvisor) в одном из двух режимов:
+L3-режим форвардит сырые IPv4-пакеты между транспортом и сетевым стеком ОС.
+Требует root (CAP_NET_RAW).
 
-- **proxy** (по умолчанию, рекомендуется) — каждое TCP-соединение от клиента терминируется локально и переоткрывается обычным `net.Dial` к настоящему адресату. **Без root, без raw-сокетов, без iptables** — обычный процесс. Работает на Linux, Windows, macOS.
-- **raw** — gVisor форвардит сырые IP-пакеты через raw-сокет (только Linux, нужен root + точечное правило iptables на дроп RST). Чуть быстрее end-to-end, но требует привилегий.
+sudo ./openflux --exit-node --mode l3 \
+    --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\"
 
-Запуск в proxy-режиме (по умолчанию):
-```bash
-./openflux --exit-node --url "YOUR_YANDEX_DOC_URL" --debug
-```
+Добавьте --debug для подробного лога. На Linux правило iptables не
+требуется - L3-код сам дропает исходящие RST перед sendto().
 
-Запуск в raw-режиме (Linux, root):
-```bash
-sudo ./openflux --exit-node --mode raw --local-ip 203.0.113.10 \
-    --url "YOUR_YANDEX_DOC_URL" --debug
-```
+### Выходная нода (legacy proxy-режим, без root)
 
-### 1. Настройка десктопного клиента:
+./openflux --exit-node --mode proxy \
+    --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\"
 
-Команды для настройки десктопного клиента:
-```bash
-./openflux --client --url "YOUR_YANDEX_DOC_URL" --socks5 :1080 --debug
-```
+Proxy-режим - fallback для платформ, где L3 недоступен (Windows без
+WinDivert, macOS или Linux без root).
 
-Затем настройте SOCKS5-прокси в браузере на localhost:1080.
+### Клиент - macOS L3 (utun)
 
-### 2. Использование транспорта Cups.online
+sudo ./openflux --client --tun \
+    --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\"
 
-Cups.online — публичный сервис live-coding интервью. Каждая комната интервью — это канал Centrifugo (`$shared_editor:room-<uuid>`), переносящий произвольные base64-блобы — ровно то, что нужно OpenFlux для пересылки TCP-пакетов.
+Создаёт utun-интерфейс, ставит bypass-маршруты для транспорта, ждёт
+подключения транспорта, затем забирает default-маршрут. SOCKS5 не нужен.
 
-**Выходная нода:** создаёт небольшой набор комнат на старте и печатает base64-список комнат, который клиент должен использовать:
+Требует sudo. Весь трафик, кроме транспорта, идёт через туннель.
 
-```bash
-./openflux --exit-node --transport cupsonline --debug
-```
+### Клиент - SOCKS5 (все платформы, fallback)
 
-```
-=== COPY THIS TO CLIENT ===
-eyJyb29tcyI6WyI0YTFh...base64...
-===========================
-```
+./openflux --client --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\" \
+    --socks5 :1080
 
-**Клиент:** вставьте напечатанный base64 в `--url`:
+Настройте браузер на 127.0.0.1:1080 как SOCKS5-прокси.
 
-```bash
-./openflux --client --transport cupsonline \
-    --url "eyJyb29tcyI6WyI0YTFh...base64..." --socks5 :1080 --debug
-```
+### Выбор кодека
 
-Примечания:
-- Список комнат — это ключ сессии: комнаты живут, пока выходная нода их держит; каждый рестарт ноды генерирует новый список.
-- TCP-потоки прибиты к одной комнате по flow-hash, поэтому порядок пакетов внутри соединения сохраняется.
-- Добавьте `--encryption-key-file <path>` на обеих сторонах, если не хотите, чтобы Cups.online видел содержимое.
+По умолчанию транспорт использует батчированный + zstd кодек
+(transport/batched.go + transport/framing.go). Для старого
+per-packet LZ4-кодека передайте --legacy:
+
+./openflux --client --legacy ...   # на обеих сторонах
+
+Важно: батчированный wire-формат НЕ совместим с legacy LZ4.
+Клиент и выходная нода должны использовать один и тот же кодек
+(оба - новые, либо оба - --legacy).
+
+### Бенчмарки
+
+Измерьте чистый goodput через транспорт, не задевая сеть хоста:
+
+# Отправитель: залить 100 MB
+./openflux --client --transport yandex --url \"...\" --bench-send 100
+
+# Приёмник: измерить goodput
+./openflux --client --transport yandex --url \"...\" --bench-sink
+
+### Другие транспорты
+
+# Yandex Volga (HTTP relay)
+./openflux --exit-node --mode l3 --transport vyandex --url \"...\" --debug
+
+# MAX / OneMe (WebRTC DataChannel)
+./openflux --exit-node --mode l3 --transport oneme \
+    --maxToken \"...\" --maxUid \"...\" --debug
+
+# Cups.online (Centrifugo-комнаты)
+./openflux --exit-node --mode l3 --transport cupsonline --debug
+# печатает base64-список комнат; передайте его клиенту через --url
+
+## TODO
+
+- **Запуск выходной ноды без VPS (QEMU).** Минимальный образ Alpine Linux
+  (~13 MB) может хостить выходную ноду на любом десктопе (macOS / Windows /
+  Linux) с установленным QEMU. Базовые файлы (vmlinuz-virt +
+  base-initramfs.gz) собираются один раз; пользовательский образ
+  пересобирается за ~3 секунды с бинарём oflx и URL транспорта.
+  Пока не поставлено — трекается как будущее дополнение.
+
+- **Windows L3-клиент.** L3-выход работает на Linux (SOCK_RAW) и заглушен
+  для Windows (WinDivert). Подключить WinDivert-бэкенд к L3-форвардеру —
+  запланировано.
+
+- **Дополнительные транспорты.** Новые бэкенды можно реализовать против
+  интерфейса Transport; батчированный кодек оборачивает любой из них.
+
+- **Публичное распространение в App Store.** Текущий iOS-билд — только
+  TestFlight-internal (Guideline 5.4 требует NetworkExtension-таргет и
+  organization-аккаунт для публичных VPN-приложений).
+
 
 ## Флаги
 
-| Флаг          | По умолчанию        | Описание                       |
-|---------------|---------------------|--------------------------------|
-| `--client`    |                     | Запуск в режиме клиента        |
-| `--exit-node` |                     | Запуск в режиме ноды           |
-| `--socks5`    | `:1080`             | Адрес SOCKS5 прокси            |
-| `--url`       | `https://localhost` | URL документа (Yandex Docs)    |
-| `--maxToken`  | ``                  | Токен авторизации (Max)        |
-| `--maxUid`    | ``                  | ID пользователя (Max)          |
-| `--debug`     | `false`             | Включить подробное логирование |
-| `--transport` | `yandex`            | `yandex`, `vyandex`, `oneme`, `cupsonline` |
-| `--mode`      | `proxy`             | Режим выходной ноды: `proxy` (по умолчанию) или `raw` (только Linux, нужен root) |
-| `--local-ip`  | ``                  | Egress IP выходной ноды (только raw, точечный дроп RST) |
+| Флаг | По умолчанию | Описание |
+|------|--------------|----------|
+| --client | | Запуск в режиме клиента |
+| --exit-node | | Запуск в режиме выходной ноды |
+| --tun | false | macOS-клиент: utun L3-режим (нужен sudo) |
+| --socks5 | :1080 | Адрес SOCKS5-прокси |
+| --url | https://localhost | URL документа (Yandex Docs, Cups base64-список) |
+| --transport | yandex | yandex, vyandex, oneme, cupsonline |
+| --mode | l3 | Режим выходной ноды: l3 (raw forward) или proxy (gVisor + net.Dial) |
+| --legacy | false | Использовать legacy per-packet LZ4-кодек вместо батчинга |
+| --encryption-key-file | | Опциональная AES-256-GCM обёртка (общий секрет) |
+| --maxToken | | Токен авторизации (MAX) |
+| --maxUid | | ID пользователя (MAX) |
+| --bench-send | 0 | Бенчмарк: залить N MB и выйти |
+| --bench-sink | false | Бенчмарк: принять и измерить goodput |
+| --bench-compressible | false | Бенчмарк: использовать сжимаемый payload |
+| --debug | false | Включить подробное логирование |
 
 ## Реализация собственных транспортов
 
-Вы можете реализовать интерфейс `Transport` из `transport/transport.go` и зарегистрировать свой транспорт в switch-блоке в main.go.
+Реализуйте интерфейс Transport из transport/transport.go и
+зарегистрируйте свой транспорт в switch-блоке main.go. Батчированный кодек
+(BatchedTransport) оборачивает любой транспорт - новый бэкенд получает
+батчинг бесплатно.
 
 ## Лицензия
 
-Проект распространяется под лицензией **GNU General Public License v3.0 or later**.
-Полный текст — в файле [LICENSE](LICENSE).
+Проект распространяется под лицензией GNU General Public License v3.0 or
+later. Полный текст - в файле LICENSE.
 
-Лицензии третьих сторон — в файле [NOTICE](NOTICE).
+Лицензии третьих сторон - в файле NOTICE.
 
 ## Дисклеймер
 
-Только для образовательного использования. Тестируйте на собственных машинах и сетях.
+Только для образовательного использования. Тестируйте на собственных
+машинах и сетях.
 
-## Поддержать проект
-
-**USDT · TRC20**
-
-```
-TXyTj5DqJNcQpd2yWwdVuXdabvQibXgLKC
-```

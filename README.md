@@ -2,16 +2,23 @@
 
 **English** | [Русский](README.ru.md)
 
-Network stack research tool. TCP tunnel with pluggable transports.
-
+Network stack research tool. TCP tunnel with pluggable transports,
+batched+zstd codec, and L3 exit-node mode.
 
 # Disclaimer
 
-The author of OpenFlux **does not encourage** the use of this project to bypass restrictions or violate the rules of any platform, and **is not responsible** for the final scenarios of how users apply this tool in real life or on the Internet. Any specific technical features of the application are nothing more than an **architectural coincidence**, created **without any intent**.
+The author of OpenFlux **does not encourage** the use of this project to bypass
+restrictions or violate the rules of any platform, and **is not responsible**
+for the final scenarios of how users apply this tool in real life or on the
+Internet. Any specific technical features of the application are nothing more
+than an **architectural coincidence**, created **without any intent**.
 
-The project is **entirely non-commercial**, contains **no paid features, hidden subscriptions, or commercial benefit**.
+The project is **entirely non-commercial**, contains **no paid features, hidden
+subscriptions, or commercial benefit**.
 
-The author **is not responsible** for forks, modifications, or derivative versions of OpenFlux created by third parties. Any changes added to a fork are the responsibility of its author.
+The author **is not responsible** for forks, modifications, or derivative
+versions of OpenFlux created by third parties. Any changes added to a fork are
+the responsibility of its author.
 
 The author **is not responsible** for:
 
@@ -26,181 +33,245 @@ The original code is provided **as is**, **without any warranties**.
 
 | Platform | Download | Notes |
 |----------|----------|-------|
-| **Android** | [OpenFluxAndroid releases](https://github.com/p1neappleXpress/OpenFluxAndroid) | Standalone APK |
-| **iOS** | [TestFlight beta](https://testflight.apple.com/join/BwnAcdus) | System-wide VPN via Network Extension |
+| **macOS**  | build from source | CLI + utun L3 client (--tun) |
+| **Linux**  | build from source | CLI client / exit node |
+| **Windows**| build from source | CLI client / exit node (proxy mode) |
+| **Android**| [OpenFluxAndroid releases](https://github.com/p1neappleXpress/OpenFluxAndroid) | Standalone APK |
+| **iOS**    | [TestFlight beta](https://testflight.apple.com/join/BwnAcdus) | System-wide VPN via Network Extension |
 
-> **iOS app** built by [@saharev1](https://github.com/saharev1) — full iOS client, TestFlight pipeline, system VPN support, DNS-over-TLS, and many stability fixes. HUGE thanks! 🙏
+> **iOS app** built by [@saharev1](https://github.com/saharev1) - full iOS client,
+> TestFlight pipeline, system VPN support, DNS-over-TLS, and many stability fixes.
+> HUGE thanks!
 >
-> **Android app** — [p1neappleXpress/OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid).
+> **Android app** - [p1neappleXpress/OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid).
 
-## Overview
-```
-Client (SOCKS5) --> Transport --> Exit Node --> Internet
-```
+## Architecture
+
+macOS client (utun)    --> Transport --> Exit node (L3) --> Internet
+Linux/Windows client   --> Transport --> Exit node (L3) --> Internet
+iOS packet tunnel      --> Transport --> Exit node (L3) --> Internet
+Android client         --> Transport --> Exit node (L3) --> Internet
+
+Exit node terminates nothing: it forwards raw IP packets with SNAT/DNAT
+(conntrack + egress-IP filter). One TCP connection end-to-end between
+the client and the real server.
+
+The client terminates TCP locally (gVisor, utun, or NEPacketTunnelProvider),
+sends raw IP packets into the transport. The exit node rewrites source/dest
+addresses and forwards - it never sees TCP state.
+
+## Highlights
+
+- **Pluggable transports** - Yandex.Docs (WS), Yandex Volga (HTTP relay),
+  MAX/OneMe (WebRTC DataChannel), Cups.online (Centrifugo rooms).
+- **Batched + zstd codec** - coalesces many tunnel packets into a single
+  transport message. Fewer channel messages, higher throughput. See
+  transport/batched.go and transport/framing.go.
+- **L3 exit** - exit node runs in --mode l3 and forwards raw IPv4 packets
+  via SOCK_RAW (Linux) or WinDivert (Windows). No userspace TCP stack,
+  no double termination.
+- **macOS utun client** - --client --tun (macOS only). Creates a utun
+  interface, watches its own sockets to install bypass routes, then takes
+  the default route. No SOCKS5, no gVisor.
+- **Legacy fallback** - --legacy reverts the transport to the old
+  per-packet LZ4 codec (compatible with older clients).
+- **Benchmark modes** - --bench-send N / --bench-sink measure raw
+  goodput through the transport without touching the host network.
 
 ## Requirements
-1. Golang v. 1.26.3+ - is required for building desktop client / exit node binary (openflux);
-2. Android Native Development Kit (NDK) v.27.0.12077973+ - is required for building Android client binary;
-3. XCode v. 26.6+ - is required for building iOS client binary;
-4. Linux VPS / VDS exit node.
 
-## Overview
-
-TCP packets are sent via Transport. Currently, there are three transports available:
-1. Yandex - sends packets via Yandex Docs cursor messages;
-2. Max - sends packets via WebRTC DataChannel
-    WARNING:
-   - **Do not use** your primary or important MAX account.
-   - **Do not use** an account whose deletion or loss of access would be critical.
-   - Usage via an **external VPS** may lead to **account restrictions**.
-   - The **restriction may persist** after stopping OpenFlux.
-   - MAX transport should be considered **experimental** until the blocking mechanism is understood.
-3. Cups.online - sends packets via live-coding interview rooms (Centrifugo channels)
-    WARNING:
-   - Cups.online is a public interview service; rooms are open to anyone who knows
-     their UUID.
-   - Use --encryption-key-file if you care about confidentiality.
-   - Do not abuse the room-creation endpoint; the exit node creates a small fixed
-     number of rooms (default 4) at startup and keeps them for the session.
-
-Client side runs a SOCKS5 proxy, exit node decapsulates and forwards packets to destination point.
+1. **Go 1.26.3+** - to build the desktop client / exit-node binary.
+2. **Android NDK r27+** - to build the Android client binary.
+3. **Xcode 26.6+** - to build the iOS client binary.
+4. A Linux VPS / VDS for the exit node (or run the exit locally via QEMU,
+   see below).
 
 ## Structure
 
-```
 OpenFlux/
-├── main.go                     # CLI entry (client / exit-node)
-├── export_ios.go               # cgo bridge for the iOS static library (build tag: ios)
-├── transport/
-│   ├── transport.go            # Transport interface
-│   ├── compressor.go           # Compression wrapper
-│   ├── yandex/                 # Yandex Docs backend
-│   ├── oneme/                  # MAX Messenger backend
-│   └── cupsonline/             # Cups.online interview-room backend
-├── tunnel/
-│   ├── tunnel.go               # TCP tunnel core (proxy + raw exit modes)
-│   ├── endpoint.go             # Virtual NIC
-│   ├── rawsocket_linux.go      # Raw-socket exit mode (Linux, root)
-│   └── rawsocket_{darwin,windows}.go  # stubs (raw mode unsupported)
-├── socks5/                     # SOCKS5 server
-├── network/                    # Checksums, packet parsing
-├── utils/                      # Logging
-├── ios-app/                    # SwiftUI iOS client (XcodeGen), links liboflux.a
-├── build_ios.sh                # Build the iOS static library (liboflux.a)
-├── build_ios_app.sh            # Build + archive + export the iOS app IPA
-└── build_android.sh            # Build the Android client binary
-```
+  main.go                          # CLI entry (client / exit-node / benches)
+  bench.go                         # Benchmark helpers (--bench-send/--bench-sink)
+  tun_darwin.go                    # macOS utun L3 client
+  tun_watch.go                     # Socket watcher for bypass routes
+  tun_other.go                     # Stubs for non-darwin platforms
+  export_ios.go                    # cgo bridge for the iOS static library
+  transport/
+    transport.go                   # Transport interface
+    batched.go                     # BatchedTransport (coalescing + zstd)
+    framing.go                     # Wire framing for batched frames
+    compressor.go                  # Legacy per-packet LZ4 codec
+    encrypted.go                   # Optional AES-256-GCM wrapper
+    yandex/                        # Yandex.Docs + Volga backends
+    oneme/                         # MAX Messenger backend
+    cupsonline/                    # Cups.online backend
+  tunnel/
+    tunnel.go                      # Client tunnel (gVisor + TunnelLinkEndpoint)
+    endpoint.go                    # Virtual NIC (client)
+    exit.go                        # NewExitNode dispatcher (l3 / proxy)
+    proxy_exit.go                  # Legacy proxy exit (gVisor + net.Dial)
+    l3/                            # L3 exit node
+      l3.go                        # L3Exit: SNAT/DNAT, conntrack, egress filter
+      backend.go                   # L3Backend interface
+      backend_linux.go             # SOCK_RAW backend (Linux)
+      backend_windows.go           # WinDivert backend (stub)
+      backend_other.go             # Unsupported-platform stub
+      conntrack.go                 # Conntrack table
+      flow.go                      # Flow keys, SNAT/DNAT, checksums
+    rawsocket_linux.go             # Legacy raw exit (kept for reference)
+    rawsocket_{darwin,windows}.go
+  socks5/                          # SOCKS5 server (client fallback)
+  network/                         # Checksums, packet parsing
+  utils/                           # Logging
+  ios-app/                         # SwiftUI iOS client (XcodeGen)
+  build_ios.sh                     # Build iOS static library (liboflux.a)
+  build_ios_app.sh                 # Build + archive + export iOS app IPA
+  build_android.sh                 # Build Android client binary
+  scripts/
+    cleanup-utun.sh                # Remove leftover utun routes (macOS)
+    build-flx-linux-img.sh         # Build minimal Alpine rootfs for QEMU
 
-## Build (desktop client / exit-node binary)
+## Build
 
-```bash
 go mod tidy
 go build -o openflux .
-```
 
-## Build for Android (client binary)
-```bash
-export ANDROID_NDK_HOME=<your Android NDK path>
-./build_android.sh
-```
+Cross-build for the exit node (Linux amd64), stripped:
 
-## Build for iOS (client binary)
-```bash
-export XCODE_PATH="<your Xcode.app path>" # optional, defaults to /Applications/Xcode.app
-./build_ios.sh
-```
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags=\"-s -w\" -trimpath -o openflux-linux .
 
 ## Usage
 
-### 1. Setting up exit node
+### Exit node (Linux, L3 mode)
 
-The exit node runs a userspace TCP/IP stack (gvisor) in one of two modes:
+L3 mode forwards raw IPv4 packets between the transport and the OS network
+stack. Requires root (CAP_NET_RAW).
 
-- **proxy** (default, recommended) - every TCP connection from the client is terminated locally and re-originated through an ordinary `net.Dial` to the real destination. **No root, no raw sockets, no iptables** - just a normal process. Works on Linux, Windows, macOS.
-- **raw** - gVisor forwards raw IP packets through a raw socket (Linux only, needs root + a scoped RST-drop iptables rule). Slightly faster end-to-end, but requires privileges.
+sudo ./openflux --exit-node --mode l3 \
+    --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\"
 
-Run in proxy mode (default):
-```bash
-./openflux --exit-node --url "YOUR_YANDEX_DOC_URL" --debug
-```
+Add --debug for verbose logging. On Linux, no iptables rule is required -
+the L3 code drops outbound RSTs before sendto().
 
-Run in raw mode (Linux, root):
-```bash
-sudo ./openflux --exit-node --mode raw --local-ip 203.0.113.10 \
-    --url "YOUR_YANDEX_DOC_URL" --debug
-```
+### Exit node (legacy proxy mode, no root needed)
 
-### 1. Setting up desktop client:
+./openflux --exit-node --mode proxy \
+    --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\"
 
-Setup commands for desktop client:
-```bash
-./openflux --client --url "YOUR_YANDEX_DOC_URL" --socks5 :1080 --debug
-```
+Proxy mode is a fallback for platforms where L3 is not available
+(Windows without WinDivert, macOS, or non-root Linux).
 
-Then set up SOCKS5 proxy in your browser at localhost:1080.
+### Client - macOS L3 (utun)
 
-### 2. Using the Cups.online transport
+sudo ./openflux --client --tun \
+    --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\"
 
-Cups.online is a public live-coding interview service. Each interview room is a Centrifugo channel (`$shared_editor:room-<uuid>`) that carries arbitrary base64 blobs - exactly what OpenFlux needs to move TCP packets.
+Creates a utun interface, installs bypass routes for the transport, waits
+for the transport to connect, then takes the default route. No SOCKS5.
 
-**Exit node:** creates a small set of rooms at startup and prints a base64 room list that the client must use:
+Requires sudo. All traffic except the transport goes through the tunnel.
 
-```bash
-./openflux --exit-node --transport cupsonline --debug
-```
+### Client - SOCKS5 (all platforms, fallback)
 
-```
-=== COPY THIS TO CLIENT ===
-eyJyb29tcyI6WyI0YTFh...base64...
-===========================
-```
+./openflux --client --transport yandex \
+    --url \"YOUR_YANDEX_DOC_URL\" \
+    --socks5 :1080
 
-**Client:** paste the printed base64 into `--url`:
+Point your browser at 127.0.0.1:1080 as a SOCKS5 proxy.
 
-```bash
-./openflux --client --transport cupsonline \
-    --url "eyJyb29tcyI6WyI0YTFh...base64..." --socks5 :1080 --debug
-```
+### Codec selection
 
-Notes:
-- The room list is a session key: rooms live only as long as the exit node keeps them, and each exit-node restart produces a new list.
-- TCP flows are pinned to a single room by flow-hash, so packet ordering inside a connection is preserved.
-- Add `--encryption-key-file <path>` on both sides if you do not want Cups.online to see the contents.
+By default the transport uses the batched + zstd codec
+(transport/batched.go + transport/framing.go). To use the old
+per-packet LZ4 codec instead, pass --legacy:
+
+./openflux --client --legacy ...   # on both client and exit node
+
+Important: the batched wire format is NOT compatible with the legacy
+LZ4 format. Client and exit node must both use the same codec (both new,
+or both --legacy).
+
+### Benchmarks
+
+Measure raw goodput over the transport, without touching the host network:
+
+# Sender: push 100 MB
+./openflux --client --transport yandex --url \"...\" --bench-send 100
+
+# Receiver: measure goodput
+./openflux --client --transport yandex --url \"...\" --bench-sink
+
+### Other transports
+
+# Yandex Volga (HTTP relay)
+./openflux --exit-node --mode l3 --transport vyandex --url \"...\" --debug
+
+# MAX / OneMe (WebRTC DataChannel)
+./openflux --exit-node --mode l3 --transport oneme \
+    --maxToken \"...\" --maxUid \"...\" --debug
+
+# Cups.online (Centrifugo rooms)
+./openflux --exit-node --mode l3 --transport cupsonline --debug
+# prints a base64 room list; pass it to the client via --url
+
+## TODO
+
+- **Run the exit node without a VPS (QEMU).** A minimal Alpine Linux image
+  (~13 MB) can host the exit node on any desktop (macOS / Windows / Linux)
+  with QEMU installed. Base files (vmlinuz-virt + base-initramfs.gz) are built
+  once; per-user images are repacked in ~3 seconds with the oflx binary and
+  the transport URL. Not shipped yet — tracked as a future addition.
+
+- **Windows L3 client.** The L3 exit works on Linux (SOCK_RAW) and is
+  stubbed for Windows (WinDivert). Wiring the WinDivert backend to the L3
+  forwarder is planned.
+
+- **Additional transports.** New backends can be implemented against the
+  Transport interface; the batched codec wraps any of them.
+
+- **Public App Store distribution.** Current iOS build is TestFlight-internal
+  only (App Store Guideline 5.4 requires a NetworkExtension target and an
+  organization account for public VPN apps).
+
 
 ## Flags
 
-| Flag          | Default             | Description                |
-|---------------|---------------------|----------------------------|
-| `--client`    |                     | Run as client              |
-| `--exit-node` |                     | Run as exit node           |
-| `--socks5`    | `:1080`             | SOCKS5 listen address      |
-| `--url`       | `https://localhost` | Document URL (Yandex Docs) |
-| `--maxToken`  | ``                  | Auth token (Max)           |
-| `--maxUid`    | ``                  | User ID (Max)              |
-| `--debug`     | `false`             | Enable verbose logging     |
-| `--transport` | `yandex`            | `yandex`, `vyandex`, `oneme`, `cupsonline` |
-| `--mode`      | `proxy`             | Exit-node mode: `proxy` (default) or `raw` (Linux only, needs root) |
-| `--local-ip`  | ``                  | Egress IP for exit node (raw mode only, scoped RST drop) |
+| Flag | Default | Description |
+|------|---------|-------------|
+| --client | | Run as client |
+| --exit-node | | Run as exit node |
+| --tun | false | macOS client: use utun L3 mode (needs sudo) |
+| --socks5 | :1080 | SOCKS5 listen address |
+| --url | https://localhost | Document URL (Yandex Docs, Cups base64 list) |
+| --transport | yandex | yandex, vyandex, oneme, cupsonline |
+| --mode | l3 | Exit-node mode: l3 (raw forward) or proxy (gVisor + net.Dial) |
+| --legacy | false | Use legacy per-packet LZ4 codec instead of batching |
+| --encryption-key-file | | Optional AES-256-GCM wrapper (shared secret) |
+| --maxToken | | Auth token (MAX) |
+| --maxUid | | User ID (MAX) |
+| --bench-send | 0 | Benchmark: push N MB and exit |
+| --bench-sink | false | Benchmark: receive and measure goodput |
+| --bench-compressible | false | Benchmark: use compressible payload |
+| --debug | false | Enable verbose logging |
 
 ## Implementing custom transports
 
-You are free to implement the `Transport` interface from `transport/transport.go` and register your custom transport in main.go switch block.
+Implement the Transport interface from transport/transport.go and register
+your transport in the main.go switch block. The batched codec
+(BatchedTransport) wraps any transport, so a new backend gets batching for
+free.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0 or later**.
-See [LICENSE](LICENSE) for the full text.
+This project is licensed under the GNU General Public License v3.0 or later.
+See LICENSE for the full text.
 
-Third-party licenses are listed in [NOTICE](NOTICE).
+Third-party licenses are listed in NOTICE.
 
 ## Disclaimer
 
 Educational use only. Test on your own machines and networks.
 
-## Support the project
-
-**USDT · TRC20**
-
-```
-TXyTj5DqJNcQpd2yWwdVuXdabvQibXgLKC
-```
