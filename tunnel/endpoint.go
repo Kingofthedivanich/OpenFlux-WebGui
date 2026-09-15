@@ -9,8 +9,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
-	"universal-bypass-tool/network"
-	"universal-bypass-tool/utils"
+	"openflux/network"
+	"openflux/utils"
 )
 
 type TunnelLinkEndpoint struct {

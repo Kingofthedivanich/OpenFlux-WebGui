@@ -6,7 +6,7 @@ import (
 	"net"
 	"sync"
 
-	"universal-bypass-tool/utils"
+	"openflux/utils"
 )
 
 type Dialer interface {

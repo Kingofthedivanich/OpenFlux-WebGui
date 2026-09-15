@@ -51,3 +51,14 @@ app-darwin
 app.exe
 universal-bypass-tool
 universal-bypass-tool.exe
+universal-bypass-tool
+oflx
+oflx-new
+deploy.sh
+go.mod.bak
+a/
+stats.txt
+watch_stats.sh
+*.log
+openflux
+*.bak

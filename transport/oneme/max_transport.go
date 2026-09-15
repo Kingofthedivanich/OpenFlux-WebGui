@@ -1,8 +1,8 @@
 package oneme
 
 import (
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/utils"
+	"openflux/transport"
+	"openflux/utils"
 )
 
 type OneMeTransport struct {
@@ -66,3 +66,5 @@ func (t *OneMeTransport) Send(data []byte) error {
 	t.ch.Send(data)
 	return nil
 }
+
+

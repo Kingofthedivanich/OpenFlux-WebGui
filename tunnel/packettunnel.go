@@ -19,7 +19,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
-	"universal-bypass-tool/utils"
+	"openflux/utils"
 )
 
 // TCPDialer originates a TCP connection to address ("host:port") through some
