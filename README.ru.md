@@ -3,7 +3,8 @@
 [English](README.md) | **Русский**
 
 Исследовательский инструмент сетевого стека. TCP-туннель с подключаемыми
-транспортами, батчированным zstd-кодеком и L3-режимом выходной ноды.
+транспортами, батчированным zstd-кодеком и двумя бэкендами выходной ноды
+(L3 raw forward / L4 gVisor proxy).
 
 # Отказ от ответственности
 
@@ -35,9 +36,9 @@
 
 | Платформа | Скачать | Примечания |
 |-----------|---------|------------|
-| **macOS**   | сборка из исходников | CLI + utun L3-клиент (--tun) |
-| **Linux**   | сборка из исходников | CLI-клиент / выходная нода |
-| **Windows** | сборка из исходников | CLI-клиент / выходная нода (proxy) |
+| **macOS**   | сборка из исходников | CLI + utun L3-клиент (`--inbound=tun`, по умолчанию на macOS) |
+| **Linux**   | сборка из исходников | CLI-клиент (SOCKS5) / выходная нода (L3 или L4) |
+| **Windows** | сборка из исходников | CLI-клиент (SOCKS5) / выходная нода (`l4`, либо `l3` через QEMU - см. TODO) |
 | **Android** | [Релизы OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid) | Отдельный APK |
 | **iOS**     | [TestFlight бета](https://testflight.apple.com/join/BwnAcdus) | Системный VPN через Network Extension |
 
@@ -49,50 +50,111 @@
 
 ## Архитектура
 
-macOS client (utun)    --> Транспорт --> Выходная нода (L3) --> Интернет
-Linux/Windows client   --> Транспорт --> Выходная нода (L3) --> Интернет
-iOS packet tunnel      --> Транспорт --> Выходная нода (L3) --> Интернет
-Android client         --> Транспорт --> Выходная нода (L3) --> Интернет
+Любой клиент работает с любым бэкендом выходной ноды. `--mode` выбирается
+на **выходной ноде**, а не на клиенте.
 
-Выходная нода ничего не терминирует: она форвардит сырые IP-пакеты с
-SNAT/DNAT (conntrack + фильтр по egress-IP). Одно TCP-соединение end-to-end
-между клиентом и реальным сервером.
+```
+Клиент (любой): macOS (utun) / Linux / Windows / iOS (packet tunnel) / Android
+                    |
+                    v
+               Транспорт (Yandex.Docs / Volga / MAX / Cups / Mail.ru)
+                    |
+                    v
+               Выходная нода  -->  Интернет
+                 --mode l3   (сырой SNAT/DNAT, Linux + root)
+                 --mode l4   (gVisor proxy, любая платформа)
+```
+
+| Клиент (любой)                          | Бэкенд выхода | Требует              |
+|-----------------------------------------|---------------|----------------------|
+| macOS / Linux / Windows / iOS / Android | `--mode l3`   | exit на Linux + root |
+| macOS / Linux / Windows / iOS / Android | `--mode l4`   | ничего               |
+
+В `l3` выходная нода ничего не терминирует: она форвардит сырые IP-пакеты
+с SNAT/DNAT (conntrack + фильтр по egress-IP). Одно TCP-соединение
+end-to-end между клиентом и реальным сервером.
+
+В `l4` выходная нода терминирует TCP в userspace-стеке gVisor, затем
+переподключается к реальному серверу через `net.Dial`. Работает на любой ОС
+без root.
 
 Клиент терминирует TCP локально (gVisor, utun или NEPacketTunnelProvider),
-отправляет сырые IP-пакеты в транспорт. Выходная нода переписывает
-src/dst-адреса и форвардит - TCP-состояние она не видит никогда.
+затем отправляет сырые IP-пакеты в транспорт.
+
+## Бэкенды выходной ноды
+
+У выходной ноды ровно **два** бэкенда, выбираются флагом `--mode` на
+**выходной ноде**. Клиент бэкенд не выбирает - один и тот же клиент
+работает с любым из них.
+
+| `--mode` | Бэкенд | Форвардинг | Требует | Платформы |
+|----------|--------|-----------|---------|-----------|
+| `l3` | Сырой L3 | SNAT/DNAT сырых IPv4-пакетов через SOCK_RAW + conntrack. Без userspace TCP-стека. | root / CAP_NET_RAW | только Linux |
+| `l4` (алиас `proxy`) | gVisor proxy | Терминирует TCP в userspace-стеке gVisor, затем `net.Dial` к реальному серверу. | ничего | Linux, macOS, Windows |
+
+- `proxy` - устаревший алиас для `l4`; оба выбирают один и тот же бэкенд.
+  Каноническое имя впредь - `l4`.
+- **l3 быстрее** (одно TCP-соединение end-to-end, без двойной терминации),
+  но только Linux и нужен root.
+- **l4 работает везде** без root, ценой двойной терминации TCP
+  (клиент -> gVisor на выходе -> реальный сервер).
+- На Linux с root предпочитайте `l3`. На Windows целевой путь - `l3`
+  внутри лёгкой QEMU-виртуалки (см. TODO); WinDivert-бэкенд пока не подключён,
+  а `l4` - рабочий fallback, пока QEMU не поставлен. На хостах без root -
+  `l4`.
+
+### l3 и kernel-RST
+
+В режиме `l3` ядро видит ответные пакеты для соединений, которые оно не
+открывало, и шлёт RST, разрывая туннельные соединения. Их надо гасить:
+
+```
+# Scoped (рекомендуется): назначить отдельный egress-IP, запустить с --local-ip, затем:
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -s <egress-ip> -j DROP
+
+# Host-wide fallback (дропает ВСЕ исходящие RST; закрытые порты выглядят filtered):
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+```
+
+Дополнительно код L3 сам дропает клиентские RST до `sendto()`, так что
+правило выше нужно только для RST, которые генерирует ядро.
 
 ## Ключевые особенности
 
-- **Подключаемые транспорты** - Yandex.Docs (WS), Yandex Volga (HTTP relay),
-  MAX/OneMe (WebRTC DataChannel), Cups.online (Centrifugo-комнаты).
+- **Подключаемые транспорты** - Yandex.Docs (WS), Yandex Volga (HTTP relay + WS),
+  MAX/OneMe (WebRTC DataChannel), Cups.online (Centrifugo-комнаты),
+  Mail.ru Docs (WS).
 - **Батчинг + zstd** - склеивает множество туннельных пакетов в одно
   транспортное сообщение. Меньше сообщений в канале, выше скорость. См.
-  transport/batched.go и transport/framing.go.
-- **L3-выход** - нода в режиме --mode l3 форвардит сырые IPv4-пакеты через
-  SOCK_RAW (Linux) или WinDivert (Windows). Без userspace TCP-стека, без
-  двойной терминации.
-- **macOS utun-клиент** - --client --tun (только macOS). Создаёт utun-
-  интерфейс, следит за своими сокетами и ставит bypass-маршруты, затем
-  забирает default-маршрут. Никакого SOCKS5, никакого gVisor.
-- **Legacy fallback** - --legacy возвращает транспорт к старому кодеку
-  с per-packet LZ4 (совместим со старыми клиентами).
-- **Режимы бенчмарка** - --bench-send N / --bench-sink измеряют чистый
-  goodput через транспорт, не задевая сеть хоста.
+  `transport/batched.go` и `transport/framing.go`.
+- **Два бэкенда выхода** - `l3` (сырой SNAT/DNAT) и `l4` (gVisor proxy).
+  См. [Бэкенды выходной ноды](#бэкенды-выходной-ноды).
+- **macOS utun-клиент** - `--inbound=tun` (по умолчанию на macOS). Создаёт
+  utun-интерфейс, следит за своими сокетами и ставит bypass-маршруты, затем
+  забирает default-маршрут. Никакого SOCKS5, никакого gVisor на клиенте.
+- **iOS packet tunnel** - NEPacketTunnelProvider, чистый L3-форвардинг.
+- **Legacy-кодек** - `--codec=legacy` возвращает старый per-packet LZ4-кодек
+  (совместим со старыми клиентами).
+- **Опциональное шифрование** - `--encryption-key-file` оборачивает транспорт
+  в AES-256-GCM. Обе стороны должны использовать один и тот же секрет.
+- **Режимы бенчмарка** - `--role=bench-send --bench-bytes=N` / `--role=bench-sink`
+  измеряют чистый goodput через транспорт, не задевая сеть хоста.
 
 ## Требования
 
-1. **Go 1.26.3+** - для сборки бинарника десктопного клиента / выходной ноды.
+1. **Go** - для сборки бинарника десктопного клиента / выходной ноды. Точная
+   версия - в `go.mod`.
 2. **Android NDK r27+** - для сборки бинарника Android-клиента.
 3. **Xcode 26.6+** - для сборки бинарника iOS-клиента.
-4. **Linux VPS / VDS** для выходной ноды (или запуск exit локально через
-   QEMU, см. ниже).
+4. **Linux VPS / VDS** для выходной ноды. Бэкенд `l3` требует root; `l4`
+   работает без root.
 
 ## Структура
 
+```
 OpenFlux/
-  main.go                          # Точка входа CLI (клиент / exit-node / бенчи)
-  bench.go                         # Хелперы бенчмарка (--bench-send/--bench-sink)
+  main.go                          # Точка входа CLI (клиент / exit / бенчи)
+  bench.go                         # Хелперы бенчмарка
   tun_darwin.go                    # macOS utun L3-клиент
   tun_watch.go                     # Watcher сокетов для bypass-маршрутов
   tun_other.go                     # Заглушки для не-darwin платформ
@@ -106,21 +168,23 @@ OpenFlux/
     yandex/                        # Бэкенды Yandex.Docs + Volga
     oneme/                         # Бэкенд MAX Messenger
     cupsonline/                    # Бэкенд Cups.online
+    mailru/                        # Бэкенд Mail.ru Docs
   tunnel/
     tunnel.go                      # Клиентский туннель (gVisor + TunnelLinkEndpoint)
     endpoint.go                    # Виртуальный NIC (клиент)
-    exit.go                        # Диспетчер NewExitNode (l3 / proxy)
-    proxy_exit.go                  # Legacy proxy-exit (gVisor + net.Dial)
-    l3/                            # L3-выходная нода
+    exit.go                        # Диспетчер NewExitNode (l3 / l4)
+    proxy_exit.go                  # L4 exit (gVisor + net.Dial)
+    l3/
       l3.go                        # L3Exit: SNAT/DNAT, conntrack, фильтр egress
       backend.go                   # Интерфейс L3Backend
       backend_linux.go             # SOCK_RAW (Linux)
-      backend_windows.go           # WinDivert (stub)
+      backend_windows.go           # Заглушка (WinDivert не подключён)
       backend_other.go             # Заглушка для неподдерживаемых платформ
       conntrack.go                 # Таблица conntrack
       flow.go                      # Flow-ключи, SNAT/DNAT, checksums
     rawsocket_linux.go             # Legacy raw exit (оставлен для референса)
-    rawsocket_{darwin,windows}.go
+    rawsocket_{darwin,windows}.go  # Заглушки
+    windivert/                     # WinDivert-бэкенд (есть, но к L3 не подключён)
   socks5/                          # SOCKS5-сервер (fallback на клиенте)
   network/                         # Контрольные суммы, разбор пакетов
   utils/                           # Логирование
@@ -131,151 +195,167 @@ OpenFlux/
   scripts/
     cleanup-utun.sh                # Удалить stale-маршруты utun (macOS)
     build-flx-linux-img.sh         # Сборка минимального Alpine rootfs для QEMU
+```
 
 ## Сборка
 
+```
 go mod tidy
 go build -o openflux .
+```
 
 Кросс-сборка для выходной ноды (Linux amd64), stripped:
 
+```
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags=\"-s -w\" -trimpath -o openflux-linux .
+    go build -ldflags="-s -w" -trimpath -o openflux-linux .
+```
 
 ## Использование
 
-### Выходная нода (Linux, L3-режим)
+### Выходная нода - L3 (Linux, root)
 
-L3-режим форвардит сырые IPv4-пакеты между транспортом и сетевым стеком ОС.
-Требует root (CAP_NET_RAW).
+```
+sudo ./openflux --role=exit --mode=l3 \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL"
+```
 
-sudo ./openflux --exit-node --mode l3 \
-    --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\"
+Требует root / CAP_NET_RAW. Поставьте правило iptables (см.
+[l3 и kernel-RST](#l3-и-kernel-rst)).
 
-Добавьте --debug для подробного лога. На Linux правило iptables не
-требуется - L3-код сам дропает исходящие RST перед sendto().
+### Выходная нода - L4 (любая ОС, без root)
 
-### Выходная нода (legacy proxy-режим, без root)
+```
+./openflux --role=exit --mode=l4 \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL"
+```
 
-./openflux --exit-node --mode proxy \
-    --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\"
+Fallback для платформ, где `l3` недоступен (Windows без WinDivert, macOS,
+Linux без root). Медленнее `l3` (двойная терминация TCP).
 
-Proxy-режим - fallback для платформ, где L3 недоступен (Windows без
-WinDivert, macOS или Linux без root).
+### Клиент - macOS utun (по умолчанию на macOS)
 
-### Клиент - macOS L3 (utun)
-
-sudo ./openflux --client --tun \
-    --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\"
+```
+sudo ./openflux --role=client --inbound=tun \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL"
+```
 
 Создаёт utun-интерфейс, ставит bypass-маршруты для транспорта, ждёт
 подключения транспорта, затем забирает default-маршрут. SOCKS5 не нужен.
-
 Требует sudo. Весь трафик, кроме транспорта, идёт через туннель.
 
 ### Клиент - SOCKS5 (все платформы, fallback)
 
-./openflux --client --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\" \
-    --socks5 :1080
+```
+./openflux --role=client --inbound=socks5 \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL" \
+    --socks5=:1080
+```
 
-Настройте браузер на 127.0.0.1:1080 как SOCKS5-прокси.
+Настройте браузер / приложение на `127.0.0.1:1080` как SOCKS5-прокси. Это
+режим по умолчанию на всех платформах, кроме macOS.
 
 ### Выбор кодека
 
 По умолчанию транспорт использует батчированный + zstd кодек
-(transport/batched.go + transport/framing.go). Для старого
-per-packet LZ4-кодека передайте --legacy:
+(`transport/batched.go` + `transport/framing.go`). Для старого per-packet
+LZ4-кодека передайте `--codec=legacy`:
 
-./openflux --client --legacy ...   # на обеих сторонах
+```
+./openflux --role=client --codec=legacy ...
+```
 
-Важно: батчированный wire-формат НЕ совместим с legacy LZ4.
-Клиент и выходная нода должны использовать один и тот же кодек
-(оба - новые, либо оба - --legacy).
+**Важно:** батчированный wire-формат НЕ совместим с legacy LZ4.
+Клиент и выходная нода должны использовать один и тот же кодек (оба - новые,
+либо оба - `--codec=legacy`).
+
+### Шифрование (опционально)
+
+```
+./openflux ... --encryption-key-file=/path/to/secret.txt
+```
+
+Обе стороны должны использовать один и тот же файл-секрет. AES-256-GCM,
+направленные ключи. Без флага - без шифрования, поведение не меняется.
 
 ### Бенчмарки
 
 Измерьте чистый goodput через транспорт, не задевая сеть хоста:
 
+```
 # Отправитель: залить 100 MB
-./openflux --client --transport yandex --url \"...\" --bench-send 100
+./openflux --role=bench-send --bench-bytes=100 --transport=yandex --url="..."
 
 # Приёмник: измерить goodput
-./openflux --client --transport yandex --url \"...\" --bench-sink
+./openflux --role=bench-sink --transport=yandex --url="..."
+```
 
 ### Другие транспорты
 
-# Yandex Volga (HTTP relay)
-./openflux --exit-node --mode l3 --transport vyandex --url \"...\" --debug
+```
+# Yandex Volga (HTTP relay + WS)
+./openflux --role=exit --mode=l3 --transport=vyandex --url="..." --debug
 
 # MAX / OneMe (WebRTC DataChannel)
-./openflux --exit-node --mode l3 --transport oneme \
-    --maxToken \"...\" --maxUid \"...\" --debug
+./openflux --role=exit --mode=l3 --transport=oneme \
+    --maxToken="..." --maxUid="..." --debug
 
 # Cups.online (Centrifugo-комнаты)
-./openflux --exit-node --mode l3 --transport cupsonline --debug
+./openflux --role=exit --mode=l3 --transport=cupsonline --debug
 # печатает base64-список комнат; передайте его клиенту через --url
 
-## TODO
-
-- **Запуск выходной ноды без VPS (QEMU).** Минимальный образ Alpine Linux
-  (~13 MB) может хостить выходную ноду на любом десктопе (macOS / Windows /
-  Linux) с установленным QEMU. Базовые файлы (vmlinuz-virt +
-  base-initramfs.gz) собираются один раз; пользовательский образ
-  пересобирается за ~3 секунды с бинарём oflx и URL транспорта.
-  Пока не поставлено — трекается как будущее дополнение.
-
-- **Windows L3-клиент.** L3-выход работает на Linux (SOCK_RAW) и заглушен
-  для Windows (WinDivert). Подключить WinDivert-бэкенд к L3-форвардеру —
-  запланировано.
-
-- **Дополнительные транспорты.** Новые бэкенды можно реализовать против
-  интерфейса Transport; батчированный кодек оборачивает любой из них.
-
-- **Публичное распространение в App Store.** Текущий iOS-билд — только
-  TestFlight-internal (Guideline 5.4 требует NetworkExtension-таргет и
-  organization-аккаунт для публичных VPN-приложений).
-
+# Mail.ru Docs (WS)
+./openflux --role=exit --mode=l3 --transport=mailru \
+    --url="YOUR_MAILRU_PUBLIC_LINK" --debug
+# принимает как голый weblink (AbCdEfGh1/IjKlMnOp2), так и полный URL
+# (https://cloud.mail.ru/public/AbCdEfGh1/IjKlMnOp2)
+```
 
 ## Флаги
 
-| Флаг | По умолчанию | Описание |
-|------|--------------|----------|
-| --client | | Запуск в режиме клиента |
-| --exit-node | | Запуск в режиме выходной ноды |
-| --tun | false | macOS-клиент: utun L3-режим (нужен sudo) |
-| --socks5 | :1080 | Адрес SOCKS5-прокси |
-| --url | https://localhost | URL документа (Yandex Docs, Cups base64-список) |
-| --transport | yandex | yandex, vyandex, oneme, cupsonline |
-| --mode | l3 | Режим выходной ноды: l3 (raw forward) или proxy (gVisor + net.Dial) |
-| --legacy | false | Использовать legacy per-packet LZ4-кодек вместо батчинга |
-| --encryption-key-file | | Опциональная AES-256-GCM обёртка (общий секрет) |
-| --maxToken | | Токен авторизации (MAX) |
-| --maxUid | | ID пользователя (MAX) |
-| --bench-send | 0 | Бенчмарк: залить N MB и выйти |
-| --bench-sink | false | Бенчмарк: принять и измерить goodput |
-| --bench-compressible | false | Бенчмарк: использовать сжимаемый payload |
-| --debug | false | Включить подробное логирование |
+| Флаг | Короткий | По умолчанию | Описание |
+|------|----------|--------------|----------|
+| `--role` | `-r` | `client` | `client` \| `exit` \| `bench-send` \| `bench-sink` |
+| `--inbound` | `-i` | (платформа) | `tun` (macOS) \| `socks5` |
+| `--transport` | `-t` | `yandex` | `yandex` \| `vyandex` \| `oneme` \| `cupsonline` \| `mailru` |
+| `--mode` | `-m` | `l3` | Режим выходной ноды: `l3` \| `l4` |
+| `--codec` | `-c` | `batched` | `batched` \| `legacy` |
+| `--url` | `-u` | `http://#` | URL документа |
+| `--socks5` | `-s` | `:1080` | Адрес SOCKS5-прокси |
+| `--local-ip` | `-l` | (авто) | Egress IP для l3 SNAT / фильтра RST |
+| `--debug` | `-d` | `false` | Подробное per-packet логирование |
+| `--encryption-key-file` | | | Файл с общим секретом для AES-256-GCM |
+| `--maxToken` | | | Токен авторизации MAX (`--transport=oneme`) |
+| `--maxUid` | | | ID пользователя MAX (`--transport=oneme`) |
+| `--bench-bytes` | | `0` | Сколько MB залить (`--role=bench-send`) |
+| `--bench-compressible` | | `false` | Сжимаемый payload (bench) |
+
+Устаревшие (оставлены на один релиз, автоматически маппятся на новые флаги):
+`--client`, `--exit-node`, `--tun`, `--socks5-mode`, `--legacy`,
+`--bench-send`, `--bench-sink`.
 
 ## Реализация собственных транспортов
 
-Реализуйте интерфейс Transport из transport/transport.go и
-зарегистрируйте свой транспорт в switch-блоке main.go. Батчированный кодек
-(BatchedTransport) оборачивает любой транспорт - новый бэкенд получает
+Реализуйте интерфейс `Transport` из `transport/transport.go` и
+зарегистрируйте свой транспорт в `switch`-блоке `main.go` (см.
+`transport/mailru/` как полный пример). Батчированный кодек
+(`BatchedTransport`) оборачивает любой транспорт - новый бэкенд получает
 батчинг бесплатно.
+
+## TODO
+
+- **L3-выход на Windows и macOS.** Сейчас L3-выход работает только на Linux
+  (SOCK_RAW); Windows и macOS используют `--mode=l4`. Пакет
+  `tunnel/windivert/` (Windows) есть, но к L3-форвардеру пока не подключён.
+  Нативный L3-выход для macOS не реализован.
+- **Запуск выходной ноды (QEMU).**
 
 ## Лицензия
 
-Проект распространяется под лицензией GNU General Public License v3.0 or
-later. Полный текст - в файле LICENSE.
+GNU General Public License v3.0 or later. Полный текст - в файле LICENSE.
 
 Лицензии третьих сторон - в файле NOTICE.
-
-## Дисклеймер
-
-Только для образовательного использования. Тестируйте на собственных
-машинах и сетях.
-

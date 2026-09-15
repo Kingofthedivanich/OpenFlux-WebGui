@@ -3,7 +3,7 @@
 **English** | [Русский](README.ru.md)
 
 Network stack research tool. TCP tunnel with pluggable transports,
-batched+zstd codec, and L3 exit-node mode.
+batched+zstd codec, and two exit-node backends (L3 raw forward / L4 gVisor proxy).
 
 # Disclaimer
 
@@ -33,11 +33,11 @@ The original code is provided **as is**, **without any warranties**.
 
 | Platform | Download | Notes |
 |----------|----------|-------|
-| **macOS**  | build from source | CLI + utun L3 client (--tun) |
-| **Linux**  | build from source | CLI client / exit node |
-| **Windows**| build from source | CLI client / exit node (proxy mode) |
-| **Android**| [OpenFluxAndroid releases](https://github.com/p1neappleXpress/OpenFluxAndroid) | Standalone APK |
-| **iOS**    | [TestFlight beta](https://testflight.apple.com/join/BwnAcdus) | System-wide VPN via Network Extension |
+| **macOS**   | build from source | CLI + utun L3 client (`--inbound=tun`, default on macOS) |
+| **Linux**   | build from source | CLI client (SOCKS5) / exit node (L3 or L4) |
+| **Windows** | build from source | CLI client (SOCKS5) / exit node (`l4`, or `l3` via QEMU - see TODO) |
+| **Android** | [OpenFluxAndroid releases](https://github.com/p1neappleXpress/OpenFluxAndroid) | Standalone APK |
+| **iOS**     | [TestFlight beta](https://testflight.apple.com/join/BwnAcdus) | System-wide VPN via Network Extension |
 
 > **iOS app** built by [@saharev1](https://github.com/saharev1) - full iOS client,
 > TestFlight pipeline, system VPN support, DNS-over-TLS, and many stability fixes.
@@ -47,50 +47,110 @@ The original code is provided **as is**, **without any warranties**.
 
 ## Architecture
 
-macOS client (utun)    --> Transport --> Exit node (L3) --> Internet
-Linux/Windows client   --> Transport --> Exit node (L3) --> Internet
-iOS packet tunnel      --> Transport --> Exit node (L3) --> Internet
-Android client         --> Transport --> Exit node (L3) --> Internet
+Any client works with either exit backend. `--mode` is chosen on the **exit
+node**, not on the client.
 
-Exit node terminates nothing: it forwards raw IP packets with SNAT/DNAT
-(conntrack + egress-IP filter). One TCP connection end-to-end between
-the client and the real server.
+```
+Client (any):  macOS (utun) / Linux / Windows / iOS (packet tunnel) / Android
+                    |
+                    v
+               Transport (Yandex.Docs / Volga / MAX / Cups / Mail.ru)
+                    |
+                    v
+               Exit node  -->  Internet
+                 --mode l3   (raw SNAT/DNAT, Linux + root)
+                 --mode l4   (gVisor proxy, any platform)
+```
+
+| Client (any)                            | Exit backend | Requires              |
+|-----------------------------------------|--------------|-----------------------|
+| macOS / Linux / Windows / iOS / Android | `--mode l3`  | exit on Linux + root  |
+| macOS / Linux / Windows / iOS / Android | `--mode l4`  | nothing               |
+
+In `l3`, the exit node terminates nothing: it forwards raw IP packets with
+SNAT/DNAT (conntrack + egress-IP filter). One TCP connection end-to-end
+between the client and the real server.
+
+In `l4`, the exit node terminates TCP in a userspace gVisor stack, then
+re-dials the real server with `net.Dial`. Works on any OS, no root.
 
 The client terminates TCP locally (gVisor, utun, or NEPacketTunnelProvider),
-sends raw IP packets into the transport. The exit node rewrites source/dest
-addresses and forwards - it never sees TCP state.
+then sends raw IP packets into the transport.
+
+## Exit-node backends
+
+The exit node has exactly **two** backends, selected with `--mode` on the
+**exit node**. The client does not choose a backend - the same client works
+against either.
+
+| `--mode` | Backend | Forwarding | Requires | Platforms |
+|----------|---------|-----------|----------|-----------|
+| `l3` | Raw L3 | SNAT/DNAT on raw IPv4 via SOCK_RAW + conntrack. No userspace TCP stack. | root / CAP_NET_RAW | Linux only |
+| `l4` (alias `proxy`) | gVisor proxy | Terminates TCP in a userspace gVisor stack, then `net.Dial` to the real server. | nothing | Linux, macOS, Windows |
+
+- `proxy` is a deprecated alias for `l4`; both select the same backend.
+  `l4` is the canonical name going forward.
+- **l3 is faster** (single end-to-end TCP connection, no double termination)
+  but Linux-only and needs root.
+- **l4 works everywhere** without root, at the cost of terminating TCP twice
+  (client -> gVisor on exit -> real server).
+- On Linux with root, prefer `l3`. On Windows, the intended path is `l3`
+  inside a lightweight QEMU VM (see TODO) - the WinDivert backend is not wired
+  yet, and `l4` is the working fallback until QEMU is shipped. On non-root
+  hosts, use `l4`.
+
+### l3 and kernel RSTs
+
+In `l3` mode the kernel sees return packets for connections it never opened
+and emits RSTs, tearing the tunnel connections down. Drop them:
+
+```
+# Scoped (recommended): assign a dedicated egress IP, run with --local-ip, then:
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -s <egress-ip> -j DROP
+
+# Host-wide fallback (drops ALL outbound RST; makes closed ports look filtered):
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+```
+
+The L3 code additionally drops client-originated RSTs before `sendto()`, so
+the kernel rule above is only needed for kernel-generated RSTs.
 
 ## Highlights
 
-- **Pluggable transports** - Yandex.Docs (WS), Yandex Volga (HTTP relay),
-  MAX/OneMe (WebRTC DataChannel), Cups.online (Centrifugo rooms).
+- **Pluggable transports** - Yandex.Docs (WS), Yandex Volga (HTTP relay + WS),
+  MAX/OneMe (WebRTC DataChannel), Cups.online (Centrifugo rooms),
+  Mail.ru Docs (WS).
 - **Batched + zstd codec** - coalesces many tunnel packets into a single
   transport message. Fewer channel messages, higher throughput. See
-  transport/batched.go and transport/framing.go.
-- **L3 exit** - exit node runs in --mode l3 and forwards raw IPv4 packets
-  via SOCK_RAW (Linux) or WinDivert (Windows). No userspace TCP stack,
-  no double termination.
-- **macOS utun client** - --client --tun (macOS only). Creates a utun
+  `transport/batched.go` and `transport/framing.go`.
+- **Two exit backends** - `l3` (raw SNAT/DNAT) and `l4` (gVisor proxy).
+  See [Exit-node backends](#exit-node-backends).
+- **macOS utun client** - `--inbound=tun` (default on macOS). Creates a utun
   interface, watches its own sockets to install bypass routes, then takes
-  the default route. No SOCKS5, no gVisor.
-- **Legacy fallback** - --legacy reverts the transport to the old
-  per-packet LZ4 codec (compatible with older clients).
-- **Benchmark modes** - --bench-send N / --bench-sink measure raw
-  goodput through the transport without touching the host network.
+  the default route. No SOCKS5, no gVisor on the client.
+- **iOS packet tunnel** - NEPacketTunnelProvider, pure L3 forwarding.
+- **Legacy codec** - `--codec=legacy` reverts to the old per-packet LZ4 codec
+  (compatible with older clients).
+- **Optional encryption** - `--encryption-key-file` wraps the transport in
+  AES-256-GCM. Both peers must share the secret.
+- **Benchmark modes** - `--role=bench-send --bench-bytes=N` / `--role=bench-sink`
+  measure raw goodput through the transport without touching the host network.
 
 ## Requirements
 
-1. **Go 1.26.3+** - to build the desktop client / exit-node binary.
+1. **Go** - to build the desktop client / exit-node binary. See `go.mod` for
+   the exact version.
 2. **Android NDK r27+** - to build the Android client binary.
 3. **Xcode 26.6+** - to build the iOS client binary.
-4. A Linux VPS / VDS for the exit node (or run the exit locally via QEMU,
-   see below).
+4. **A Linux VPS / VDS** for the exit node. The `l3` backend requires root;
+   `l4` works without.
 
 ## Structure
 
+```
 OpenFlux/
-  main.go                          # CLI entry (client / exit-node / benches)
-  bench.go                         # Benchmark helpers (--bench-send/--bench-sink)
+  main.go                          # CLI entry (client / exit / benches)
+  bench.go                         # Benchmark helpers
   tun_darwin.go                    # macOS utun L3 client
   tun_watch.go                     # Socket watcher for bypass routes
   tun_other.go                     # Stubs for non-darwin platforms
@@ -104,21 +164,23 @@ OpenFlux/
     yandex/                        # Yandex.Docs + Volga backends
     oneme/                         # MAX Messenger backend
     cupsonline/                    # Cups.online backend
+    mailru/                        # Mail.ru Docs backend
   tunnel/
     tunnel.go                      # Client tunnel (gVisor + TunnelLinkEndpoint)
     endpoint.go                    # Virtual NIC (client)
-    exit.go                        # NewExitNode dispatcher (l3 / proxy)
-    proxy_exit.go                  # Legacy proxy exit (gVisor + net.Dial)
-    l3/                            # L3 exit node
+    exit.go                        # NewExitNode dispatcher (l3 / l4)
+    proxy_exit.go                  # L4 exit (gVisor + net.Dial)
+    l3/
       l3.go                        # L3Exit: SNAT/DNAT, conntrack, egress filter
       backend.go                   # L3Backend interface
       backend_linux.go             # SOCK_RAW backend (Linux)
-      backend_windows.go           # WinDivert backend (stub)
+      backend_windows.go           # Stub (WinDivert not wired yet)
       backend_other.go             # Unsupported-platform stub
       conntrack.go                 # Conntrack table
       flow.go                      # Flow keys, SNAT/DNAT, checksums
     rawsocket_linux.go             # Legacy raw exit (kept for reference)
-    rawsocket_{darwin,windows}.go
+    rawsocket_{darwin,windows}.go  # Stubs
+    windivert/                     # WinDivert backend (present, not wired to L3 yet)
   socks5/                          # SOCKS5 server (client fallback)
   network/                         # Checksums, packet parsing
   utils/                           # Logging
@@ -129,149 +191,166 @@ OpenFlux/
   scripts/
     cleanup-utun.sh                # Remove leftover utun routes (macOS)
     build-flx-linux-img.sh         # Build minimal Alpine rootfs for QEMU
+```
 
 ## Build
 
+```
 go mod tidy
 go build -o openflux .
+```
 
 Cross-build for the exit node (Linux amd64), stripped:
 
+```
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags=\"-s -w\" -trimpath -o openflux-linux .
+    go build -ldflags="-s -w" -trimpath -o openflux-linux .
+```
 
 ## Usage
 
-### Exit node (Linux, L3 mode)
+### Exit node - L3 (Linux, root)
 
-L3 mode forwards raw IPv4 packets between the transport and the OS network
-stack. Requires root (CAP_NET_RAW).
+```
+sudo ./openflux --role=exit --mode=l3 \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL"
+```
 
-sudo ./openflux --exit-node --mode l3 \
-    --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\"
+Requires root / CAP_NET_RAW. Install the iptables rule (see
+[l3 and kernel RSTs](#l3-and-kernel-rsts)).
 
-Add --debug for verbose logging. On Linux, no iptables rule is required -
-the L3 code drops outbound RSTs before sendto().
+### Exit node - L4 (any OS, no root)
 
-### Exit node (legacy proxy mode, no root needed)
+```
+./openflux --role=exit --mode=l4 \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL"
+```
 
-./openflux --exit-node --mode proxy \
-    --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\"
+Fallback for platforms where `l3` is unavailable (Windows without WinDivert,
+macOS, non-root Linux). Slower than `l3` (double TCP termination).
 
-Proxy mode is a fallback for platforms where L3 is not available
-(Windows without WinDivert, macOS, or non-root Linux).
+### Client - macOS utun (default on macOS)
 
-### Client - macOS L3 (utun)
+```
+sudo ./openflux --role=client --inbound=tun \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL"
+```
 
-sudo ./openflux --client --tun \
-    --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\"
-
-Creates a utun interface, installs bypass routes for the transport, waits
-for the transport to connect, then takes the default route. No SOCKS5.
-
+Creates a utun interface, installs bypass routes for the transport, waits for
+the transport to connect, then takes the default route. No SOCKS5.
 Requires sudo. All traffic except the transport goes through the tunnel.
 
 ### Client - SOCKS5 (all platforms, fallback)
 
-./openflux --client --transport yandex \
-    --url \"YOUR_YANDEX_DOC_URL\" \
-    --socks5 :1080
+```
+./openflux --role=client --inbound=socks5 \
+    --transport=yandex \
+    --url="YOUR_YANDEX_DOC_URL" \
+    --socks5=:1080
+```
 
-Point your browser at 127.0.0.1:1080 as a SOCKS5 proxy.
+Point your browser / app at `127.0.0.1:1080` as a SOCKS5 proxy. This is the
+default inbound on non-macOS platforms.
 
 ### Codec selection
 
 By default the transport uses the batched + zstd codec
-(transport/batched.go + transport/framing.go). To use the old
-per-packet LZ4 codec instead, pass --legacy:
+(`transport/batched.go` + `transport/framing.go`). For the old per-packet
+LZ4 codec, pass `--codec=legacy`:
 
-./openflux --client --legacy ...   # on both client and exit node
+```
+./openflux --role=client --codec=legacy ...
+```
 
-Important: the batched wire format is NOT compatible with the legacy
-LZ4 format. Client and exit node must both use the same codec (both new,
-or both --legacy).
+**Important:** the batched wire format is NOT compatible with the legacy LZ4
+format. Client and exit node must both use the same codec (both new, or both
+`--codec=legacy`).
+
+### Encryption (optional)
+
+```
+./openflux ... --encryption-key-file=/path/to/secret.txt
+```
+
+Both peers must use the same secret file. AES-256-GCM, directional keys.
+Unset means unencrypted, unchanged behavior.
 
 ### Benchmarks
 
-Measure raw goodput over the transport, without touching the host network:
+Measure raw goodput through the transport, without touching the host network:
 
+```
 # Sender: push 100 MB
-./openflux --client --transport yandex --url \"...\" --bench-send 100
+./openflux --role=bench-send --bench-bytes=100 --transport=yandex --url="..."
 
 # Receiver: measure goodput
-./openflux --client --transport yandex --url \"...\" --bench-sink
+./openflux --role=bench-sink --transport=yandex --url="..."
+```
 
 ### Other transports
 
-# Yandex Volga (HTTP relay)
-./openflux --exit-node --mode l3 --transport vyandex --url \"...\" --debug
+```
+# Yandex Volga (HTTP relay + WS)
+./openflux --role=exit --mode=l3 --transport=vyandex --url="..." --debug
 
 # MAX / OneMe (WebRTC DataChannel)
-./openflux --exit-node --mode l3 --transport oneme \
-    --maxToken \"...\" --maxUid \"...\" --debug
+./openflux --role=exit --mode=l3 --transport=oneme \
+    --maxToken="..." --maxUid="..." --debug
 
 # Cups.online (Centrifugo rooms)
-./openflux --exit-node --mode l3 --transport cupsonline --debug
+./openflux --role=exit --mode=l3 --transport=cupsonline --debug
 # prints a base64 room list; pass it to the client via --url
 
-## TODO
-
-- **Run the exit node without a VPS (QEMU).** A minimal Alpine Linux image
-  (~13 MB) can host the exit node on any desktop (macOS / Windows / Linux)
-  with QEMU installed. Base files (vmlinuz-virt + base-initramfs.gz) are built
-  once; per-user images are repacked in ~3 seconds with the oflx binary and
-  the transport URL. Not shipped yet — tracked as a future addition.
-
-- **Windows L3 client.** The L3 exit works on Linux (SOCK_RAW) and is
-  stubbed for Windows (WinDivert). Wiring the WinDivert backend to the L3
-  forwarder is planned.
-
-- **Additional transports.** New backends can be implemented against the
-  Transport interface; the batched codec wraps any of them.
-
-- **Public App Store distribution.** Current iOS build is TestFlight-internal
-  only (App Store Guideline 5.4 requires a NetworkExtension target and an
-  organization account for public VPN apps).
-
+# Mail.ru Docs (WS)
+./openflux --role=exit --mode=l3 --transport=mailru \
+    --url="YOUR_MAILRU_PUBLIC_LINK" --debug
+# accepts either a bare weblink (AbCdEfGh1/IjKlMnOp2) or a full URL
+# (https://cloud.mail.ru/public/AbCdEfGh1/IjKlMnOp2)
+```
 
 ## Flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| --client | | Run as client |
-| --exit-node | | Run as exit node |
-| --tun | false | macOS client: use utun L3 mode (needs sudo) |
-| --socks5 | :1080 | SOCKS5 listen address |
-| --url | https://localhost | Document URL (Yandex Docs, Cups base64 list) |
-| --transport | yandex | yandex, vyandex, oneme, cupsonline |
-| --mode | l3 | Exit-node mode: l3 (raw forward) or proxy (gVisor + net.Dial) |
-| --legacy | false | Use legacy per-packet LZ4 codec instead of batching |
-| --encryption-key-file | | Optional AES-256-GCM wrapper (shared secret) |
-| --maxToken | | Auth token (MAX) |
-| --maxUid | | User ID (MAX) |
-| --bench-send | 0 | Benchmark: push N MB and exit |
-| --bench-sink | false | Benchmark: receive and measure goodput |
-| --bench-compressible | false | Benchmark: use compressible payload |
-| --debug | false | Enable verbose logging |
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--role` | `-r` | `client` | `client` \| `exit` \| `bench-send` \| `bench-sink` |
+| `--inbound` | `-i` | (platform) | `tun` (macOS) \| `socks5` |
+| `--transport` | `-t` | `yandex` | `yandex` \| `vyandex` \| `oneme` \| `cupsonline` \| `mailru` |
+| `--mode` | `-m` | `l3` | Exit-node mode: `l3` \| `l4` |
+| `--codec` | `-c` | `batched` | `batched` \| `legacy` |
+| `--url` | `-u` | `http://#` | Document URL |
+| `--socks5` | `-s` | `:1080` | SOCKS5 listen address |
+| `--local-ip` | `-l` | (auto) | Egress IP for l3 SNAT / RST filter |
+| `--debug` | `-d` | `false` | Verbose per-packet logging |
+| `--encryption-key-file` | | | AES-256-GCM shared secret file |
+| `--maxToken` | | | MAX auth token (`--transport=oneme`) |
+| `--maxUid` | | | MAX user id (`--transport=oneme`) |
+| `--bench-bytes` | | `0` | MB to push (`--role=bench-send`) |
+| `--bench-compressible` | | `false` | Use compressible payload (bench) |
+
+Deprecated (kept for one release, mapped automatically to the new flags):
+`--client`, `--exit-node`, `--tun`, `--socks5-mode`, `--legacy`,
+`--bench-send`, `--bench-sink`.
 
 ## Implementing custom transports
 
-Implement the Transport interface from transport/transport.go and register
-your transport in the main.go switch block. The batched codec
-(BatchedTransport) wraps any transport, so a new backend gets batching for
-free.
+Implement the `Transport` interface from `transport/transport.go` and register
+your transport in the `main.go` switch block (see `transport/mailru/` for a
+complete example). The batched codec (`BatchedTransport`) wraps any transport,
+so a new backend gets batching for free.
+
+## TODO
+
+- **L3 exit on Windows and macOS.** The L3 exit currently works on Linux
+  (SOCK_RAW) only; Windows and macOS use `--mode=l4`. The `tunnel/windivert/`
+  package (Windows) exists but is not wired to the L3 forwarder yet. A native
+  macOS L3 exit is not implemented.
+- **Run the exit node (QEMU).**
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 or later.
-See LICENSE for the full text.
+GNU General Public License v3.0 or later. See LICENSE for the full text.
 
 Third-party licenses are listed in NOTICE.
-
-## Disclaimer
-
-Educational use only. Test on your own machines and networks.
-
