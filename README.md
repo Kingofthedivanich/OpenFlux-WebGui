@@ -271,6 +271,23 @@ remotely over an SSH tunnel (`ssh -L 8088:127.0.0.1:8088 user@host`) rather
 than exposing it directly. `l3` isn't offered here — see the plain `--role=exit`
 above if you need raw SNAT/DNAT.
 
+### Updating a deployed exit node
+
+Every tagged release publishes a prebuilt `openflux-linux-amd64` (with
+`--version` baked in) as a GitHub Release asset — see
+[`.github/workflows/release.yml`](.github/workflows/release.yml).
+[`deploy/update.sh`](deploy/update.sh) downloads the latest one, swaps it
+into place, and restarts the systemd service, backing up the current binary
+first and rolling back automatically if the new one doesn't come up
+healthy:
+
+```
+cd /root/OpenFlux && ./deploy/update.sh
+```
+
+Run it manually whenever you want to update — nothing on the box checks
+for updates on its own.
+
 ### Client - macOS utun (default on macOS)
 
 ```
