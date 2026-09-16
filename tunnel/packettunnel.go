@@ -3,9 +3,9 @@ package tunnel
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -75,7 +75,7 @@ func NewPacketTunnel(dialer TCPDialer, mtu uint32) *PacketTunnel {
 
 func (pt *PacketTunnel) handleTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
-	dest := fmt.Sprintf("%s:%d", id.LocalAddress.String(), id.LocalPort)
+	dest := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
 
 	var wq waiter.Queue
 	ep, tErr := r.CreateEndpoint(&wq)
@@ -120,7 +120,7 @@ func (pt *PacketTunnel) handleUDP(r *udp.ForwarderRequest) bool {
 		return true
 	}
 	conn := gonet.NewUDPConn(&wq, ep)
-	dest := fmt.Sprintf("%s:53", id.LocalAddress.String())
+	dest := net.JoinHostPort(id.LocalAddress.String(), "53")
 
 	utils.SafeGo("pkt.dns", func() {
 		defer conn.Close()
