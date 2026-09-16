@@ -88,8 +88,19 @@ const (
 	codecLegacy  = "legacy"
 )
 
+// version is set at build time via -ldflags "-X main.version=...". Left as
+// "dev" for local builds so it's obvious when a binary wasn't built from a
+// tagged release (e.g. by deploy/update.sh, which checks this to confirm
+// an update actually took effect).
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Println(version)
+		return
+	}
 	fmt.Print("written by p1neappleXpress\n")
+	fmt.Printf("version: %s\n", version)
 
 	role := flag.String("role", roleClient, "client | exit | bench-send | bench-sink")
 	inbound := flag.String("inbound", "", "tun | socks5 (client only; default: tun on macOS, socks5 elsewhere)")
