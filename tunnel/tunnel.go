@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -147,6 +146,31 @@ func (t *TCPTunnel) setupExitNodeProxy(tunnelNIC tcpip.NICID) {
 	t.gvisorStack.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
 }
 
+// l4IdleTimeout bounds how long an L4 relay direction waits for data before
+// giving up. Without this, a stalled peer (e.g. a mobile client that loses
+// network without sending FIN/RST) leaves the relay goroutine and both
+// sockets blocked on Read forever.
+const l4IdleTimeout = 5 * time.Minute
+
+// copyWithIdleTimeout is io.CopyBuffer with a deadline reset before every
+// Read on src: as long as some data arrives within idleTimeout the copy
+// continues indefinitely, but a src that goes silent for idleTimeout makes
+// Read return a timeout error, ending the copy instead of blocking forever.
+func copyWithIdleTimeout(dst, src net.Conn, buf []byte, idleTimeout time.Duration) {
+	for {
+		src.SetReadDeadline(time.Now().Add(idleTimeout))
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if rerr != nil {
+			return
+		}
+	}
+}
+
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dest := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
@@ -177,12 +201,12 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 
 		go func() {
 			buf := make([]byte, 256*1024)
-			io.CopyBuffer(remote, local, buf)
+			copyWithIdleTimeout(remote, local, buf, l4IdleTimeout)
 			remote.Close()
 			local.Close()
 		}()
 		buf := make([]byte, 256*1024)
-		io.CopyBuffer(local, remote, buf)
+		copyWithIdleTimeout(local, remote, buf, l4IdleTimeout)
 		local.Close()
 		remote.Close()
 	})

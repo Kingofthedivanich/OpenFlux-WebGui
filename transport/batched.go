@@ -51,12 +51,26 @@ type BatchedTransport struct {
 // the wrapped transport since the transport started.
 func (b *BatchedTransport) SendErrors() uint64 { return b.sendErrors.Load() }
 
-// sendBatch flushes one coalesced batch and records/logs a failure instead
-// of discarding it silently.
+// packetBufPool holds the per-packet copy buffers Send makes. Every one is
+// released back here from sendBatch, right after encodeBatch (via
+// frameBatch) has copied its contents into its own separate output buffer
+// -- by then nothing still references the original, so it's always safe to
+// reuse. 1500 matches a typical Ethernet MTU; larger packets just grow the
+// buffer on Send, same as any other append-style reuse.
+var packetBufPool = sync.Pool{
+	New: func() any { return make([]byte, 0, 1500) },
+}
+
+// sendBatch flushes one coalesced batch, records/logs a Send failure
+// instead of discarding it silently, and returns every packet buffer in
+// the batch to packetBufPool.
 func (b *BatchedTransport) sendBatch(batch [][]byte) {
 	if err := b.Transport.Send(encodeBatch(batch)); err != nil {
 		b.sendErrors.Add(1)
 		utils.Debugf("[BATCH] flush send error, dropped %d packets: %v", len(batch), err)
+	}
+	for _, p := range batch {
+		packetBufPool.Put(p[:0])
 	}
 }
 
@@ -97,12 +111,18 @@ func (b *BatchedTransport) Stop() error {
 // it for batching. A full queue drops the packet; the tunnel's TCP will
 // retransmit, same as the old "write queue full" behavior.
 func (b *BatchedTransport) Send(data []byte) error {
-	p := make([]byte, len(data))
+	p := packetBufPool.Get().([]byte)
+	if cap(p) < len(data) {
+		p = make([]byte, len(data))
+	} else {
+		p = p[:len(data)]
+	}
 	copy(p, data)
 	select {
 	case b.queue <- p:
 		return nil
 	default:
+		packetBufPool.Put(p[:0])
 		return fmt.Errorf("batch queue full")
 	}
 }
