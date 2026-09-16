@@ -1,6 +1,8 @@
 package yandex
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -63,7 +65,22 @@ type YandexDocsTransport struct {
 
 	userCounter atomic.Int32
 	baseUserID  string
+
+	// Lifecycle. Every goroutine the transport starts is tracked by wg and
+	// watches ctx, so Stop can end them all (including a pending reconnect
+	// backoff or an in-flight dial) and wait for them.
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	// tlsConfig overrides the WebSocket TLS settings; tests only.
+	tlsConfig *tls.Config
 }
+
+// stopWaitTimeout bounds how long Stop waits for the transport's goroutines.
+// They all exit within milliseconds once cancelled; the bound only protects
+// callers (such as the iOS bridge, which holds a lock) from a stuck one.
+const stopWaitTimeout = 5 * time.Second
 
 func NewYandexDocsTransport(url string, config transport.TransportConfig) *YandexDocsTransport {
 	t := &YandexDocsTransport{
@@ -81,10 +98,76 @@ func (t *YandexDocsTransport) Start() error {
 	}
 
 	t.baseUserID = randUserID()
-	utils.SafeGo("yandex.keepAlive", t.keepAliveLoop)
+	t.Mu.Lock()
+	t.ctx, t.cancel = context.WithCancel(context.Background())
+	t.session = nil
+	t.Mu.Unlock()
+
+	t.spawn("yandex.keepAlive", t.keepAliveLoop)
 	t.connectToDoc(0)
 
 	return nil
+}
+
+// Stop cancels every background goroutine, closes the live WebSocket so a
+// blocked read returns, and waits for the goroutines to exit.
+func (t *YandexDocsTransport) Stop() error {
+	err := t.BaseTransport.Stop()
+
+	t.Mu.Lock()
+	cancel := t.cancel
+	session := t.session
+	t.Mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if session != nil && session.Conn != nil {
+		session.Conn.Close()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(stopWaitTimeout):
+		utils.Debugf("[YDOCS] Stop: goroutines still running after %v", stopWaitTimeout)
+	}
+	return err
+}
+
+// spawn runs fn in a tracked, panic-safe goroutine.
+func (t *YandexDocsTransport) spawn(name string, fn func()) {
+	t.wg.Add(1)
+	utils.SafeGo(name, func() {
+		defer t.wg.Done()
+		fn()
+	})
+}
+
+// runCtx is the context of the current Start; Background before any Start.
+func (t *YandexDocsTransport) runCtx() context.Context {
+	t.Mu.RLock()
+	defer t.Mu.RUnlock()
+	if t.ctx == nil {
+		return context.Background()
+	}
+	return t.ctx
+}
+
+// sleepCtx sleeps for d and reports false if ctx was cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (t *YandexDocsTransport) Send(data []byte) error {
@@ -116,12 +199,8 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 
 	utils.Debugf("[YDOCS] connectToDoc attempt ...")
 
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				utils.Debugf("[PANIC] recovered in yandex.connect: %v", r)
-			}
-		}()
+	t.spawn("yandex.connect", func() {
+		ctx := t.runCtx()
 		t.Mu.Lock()
 		existingSession := t.session
 		t.Mu.Unlock()
@@ -134,7 +213,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 			userID = t.baseUserID + suffix
 		}
 
-		info, err := t.fetchDocInfo(t.url, userID)
+		info, err := t.fetchDocInfo(ctx, t.url, userID)
 		if err != nil {
 			utils.Debugf("[YDOCS] fetchDocInfo failed: %v", err)
 			t.scheduleReconnect(attempt)
@@ -150,6 +229,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
+			TLSClientConfig: t.tlsConfig,
 		}
 		headers := http.Header{}
 		headers.Set("User-Agent", "Mozilla/5.0")
@@ -158,7 +238,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		headers.Set("Host", info.Host)
 
 		utils.Debugf("[YDOCS] WebSocket dial %s", info.WsURL)
-		conn, resp, err := dialer.Dial(info.WsURL, headers)
+		conn, resp, err := dialer.DialContext(ctx, info.WsURL, headers)
 		if err != nil {
 			status := 0
 			if resp != nil {
@@ -187,8 +267,15 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		t.SetConnected(true)
 		t.Mu.Unlock()
 
+		// Stop may have run while we were dialing and missed this conn.
+		if !t.IsRunning() {
+			t.SetConnected(false)
+			conn.Close()
+			return
+		}
+
 		if existingSession == nil {
-			utils.SafeGo("yandex.writer", t.writerLoop)
+			t.spawn("yandex.writer", t.writerLoop)
 		}
 
 		// Auth - use safeWrite
@@ -223,7 +310,8 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 			}
 			t.handleMessage(session, message)
 		}
-	}()
+		conn.Close()
+	})
 }
 
 func (t *YandexDocsTransport) writerLoop() {
@@ -231,6 +319,7 @@ func (t *YandexDocsTransport) writerLoop() {
 	// capture it and block on it instead of polling with a 10ms sleep. The old
 	// poll added up to 10ms of latency to every send and woke the CPU 100x/sec
 	// while idle.
+	ctx := t.runCtx()
 	var queue chan []byte
 	for t.IsRunning() && queue == nil {
 		t.Mu.Lock()
@@ -238,8 +327,8 @@ func (t *YandexDocsTransport) writerLoop() {
 			queue = t.session.WriteQueue
 		}
 		t.Mu.Unlock()
-		if queue == nil {
-			time.Sleep(5 * time.Millisecond)
+		if queue == nil && !sleepCtx(ctx, 5*time.Millisecond) {
+			return
 		}
 	}
 	if queue == nil {
@@ -249,11 +338,15 @@ func (t *YandexDocsTransport) writerLoop() {
 	var pending []byte
 	for t.IsRunning() {
 		if pending == nil {
-			packet, ok := <-queue
-			if !ok {
+			select {
+			case packet, ok := <-queue:
+				if !ok {
+					return
+				}
+				pending = packet
+			case <-ctx.Done():
 				return
 			}
-			pending = packet
 		}
 
 		t.Mu.RLock()
@@ -261,7 +354,9 @@ func (t *YandexDocsTransport) writerLoop() {
 		t.Mu.RUnlock()
 		if session == nil || session.Conn == nil {
 			// Mid-reconnect: hold the packet and retry rather than drop it.
-			time.Sleep(15 * time.Millisecond)
+			if !sleepCtx(ctx, 15*time.Millisecond) {
+				return
+			}
 			continue
 		}
 
@@ -269,7 +364,9 @@ func (t *YandexDocsTransport) writerLoop() {
 		msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s"}]`, payload)
 		if err := session.safeWrite(websocket.TextMessage, []byte(msg)); err != nil {
 			utils.Debugf("[YDOCS] Write error: %v", err)
-			time.Sleep(15 * time.Millisecond)
+			if !sleepCtx(ctx, 15*time.Millisecond) {
+				return
+			}
 			continue // keep pending; the reconnect will bring up a new conn
 		}
 		pending = nil
@@ -281,8 +378,13 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 	defer ticker.Stop()
 	keepAliveMsg := `42["message",{"type":"cursor","cursor":"18;---KA---"}]`
 
+	ctx := t.runCtx()
 	for t.IsRunning() {
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
 		t.Mu.Lock()
 		session := t.session
 		t.Mu.Unlock()
@@ -290,7 +392,17 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 		if session != nil && session.Conn != nil {
 			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveMsg)); err != nil {
 				utils.Debugf("[YDOCS] Keep-alive failed: %v", err)
-				t.SetConnected(false)
+				// A failed write leaves the conn unusable for writes while
+				// reads may still block for a long time. Close it so the read
+				// loop fails and reconnects, instead of the stream sitting
+				// disconnected forever. Only mark the transport down if this
+				// session has not been replaced meanwhile.
+				t.Mu.Lock()
+				if t.session == session {
+					t.SetConnected(false)
+				}
+				t.Mu.Unlock()
+				session.Conn.Close()
 			}
 		}
 	}
@@ -300,6 +412,19 @@ func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 	text := string(data)
 
 	if strings.Contains(text, "---KA---") {
+		// The server never echoes our own cursor messages back, so this is
+		// the peer's keepalive: proof that this document reaches it.
+		t.RecordPeerActivity()
+		return
+	}
+
+	// The server says why it is about to drop us, e.g.
+	// {"type":"disconnectReason","code":4007,"description":"drop"}. 4007 is
+	// routine (the server sends it to a participant when another one leaves
+	// the document) and the document takes a reconnect right away, so it gets
+	// no special backoff; the log is for diagnosis.
+	if strings.Contains(text, `"disconnectReason"`) {
+		utils.Debugf("[YDOCS] server disconnect: %s", text)
 		return
 	}
 
@@ -362,8 +487,7 @@ func (t *YandexDocsTransport) scheduleReconnect(attempt int) {
 	// turn into a tight connect/close loop (previously reconnect was instant).
 	d := reconnectBackoff(next)
 	utils.Debugf("[YDOCS] reconnecting in %v (attempt %d)", d, next)
-	time.Sleep(d)
-	if !t.IsRunning() {
+	if !sleepCtx(t.runCtx(), d) || !t.IsRunning() {
 		return
 	}
 
@@ -397,7 +521,7 @@ func reconnectBackoff(n int) time.Duration {
 	return d
 }
 
-func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, error) {
+func (t *YandexDocsTransport) fetchDocInfo(ctx context.Context, url, userID string) (YandexDocsInfo, error) {
 	client := &http.Client{
 		// Cap redirects so an auth/login redirect loop fails fast instead of
 		// hanging until the timeout (a private doc redirects to passport).
@@ -411,7 +535,7 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 	}
 
 	utils.Debugf("[YDOCS] fetchDocInfo GET %s", url)
-	req, _ := http.NewRequest("GET", url, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := client.Do(req)
 	if err != nil {
