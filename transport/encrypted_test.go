@@ -803,6 +803,83 @@ func TestEncryptedStartAndStop(t *testing.T) {
 	}
 }
 
+func TestEncryptedKeepaliveAnswersSilence(t *testing.T) {
+	t.Run("exit keeps the client from rekeying needlessly", func(t *testing.T) {
+		p := newPair(t, pairOptions{})
+		p.establish()
+
+		// The client's last packet needs no reply (think: the final ACK of a
+		// closed connection). The exit must still show signs of life.
+		if err := p.client.Send([]byte("final ack")); err != nil {
+			t.Fatal(err)
+		}
+		p.pumpAll()
+		p.clock.advance(keepaliveTimeout - time.Second)
+		p.exit.tick()
+		if n := len(p.exitWire.take()); n != 0 {
+			t.Fatalf("exit sent %d frames before the keepalive timeout", n)
+		}
+		p.clock.advance(time.Second)
+		p.exit.tick()
+		keepalive := p.exitWire.take()
+		if len(keepalive) != 1 || frameType(keepalive[0]) != msgData {
+			t.Fatalf("exit sent %d frames at the keepalive timeout, want one data frame", len(keepalive))
+		}
+		p.exit.tick()
+		if n := len(p.exitWire.take()); n != 0 {
+			t.Fatalf("exit repeated the keepalive %d times", n)
+		}
+		p.clientWire.deliver(keepalive[0])
+		if got := p.clientReceived(); len(got) != 0 {
+			t.Fatalf("keepalive was delivered to the tunnel as %q", got)
+		}
+
+		// Well past the silence threshold, the client still trusts the session.
+		p.clock.advance(keepaliveTimeout + rekeyTimeout)
+		frames := p.clientFrames("next request")
+		if frameType(frames[0]) != msgData {
+			t.Fatal("client started a handshake although the exit answered with a keepalive")
+		}
+	})
+
+	t.Run("client answers too", func(t *testing.T) {
+		p := newPair(t, pairOptions{})
+		p.establish()
+		if err := p.exit.Send([]byte("push")); err != nil {
+			t.Fatal(err)
+		}
+		p.pumpAll()
+		p.clock.advance(keepaliveTimeout)
+		p.client.tick()
+		keepalive := p.clientWire.take()
+		if len(keepalive) != 1 || frameType(keepalive[0]) != msgData {
+			t.Fatalf("client sent %d frames at the keepalive timeout, want one data frame", len(keepalive))
+		}
+		p.exitWire.deliver(keepalive[0])
+		if got := p.exitReceived(); len(got) != 0 {
+			t.Fatalf("keepalive was delivered to the tunnel as %q", got)
+		}
+	})
+
+	t.Run("no keepalive while talking", func(t *testing.T) {
+		p := newPair(t, pairOptions{})
+		p.establish()
+		if err := p.client.Send([]byte("request")); err != nil {
+			t.Fatal(err)
+		}
+		p.pumpAll()
+		if err := p.exit.Send([]byte("reply")); err != nil {
+			t.Fatal(err)
+		}
+		p.pumpAll()
+		p.clock.advance(keepaliveTimeout)
+		p.exit.tick()
+		if n := len(p.exitWire.take()); n != 0 {
+			t.Fatalf("exit sent %d keepalives although its reply was the last word", n)
+		}
+	})
+}
+
 func TestEncryptedConcurrentTraffic(t *testing.T) {
 	p := newPair(t, pairOptions{})
 	p.establish()

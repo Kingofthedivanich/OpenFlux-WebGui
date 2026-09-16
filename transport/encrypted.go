@@ -138,6 +138,13 @@ type session struct {
 	// unansweredSince is when we first sent on this session without having
 	// heard back since; zero once the peer answers.
 	unansweredSince time.Time
+	// peerWaiting and lastRecvAt drive the passive keepalive: peerWaiting is
+	// set by every authenticated packet from the peer and cleared by any
+	// packet we send. A side that stays silent for keepaliveTimeout after a
+	// receive sends an empty frame, so the peer's silence detection does not
+	// fire on a session that is merely idle.
+	peerWaiting bool
+	lastRecvAt  time.Time
 }
 
 // handshake is the initiator's in-flight handshake. The Noise state is
@@ -181,16 +188,16 @@ func NewEncryptedTransport(inner Transport, cfg EncryptedConfig) (*EncryptedTran
 	return e, nil
 }
 
-// Start starts the inner transport and, on the initiator, the handshake
-// timer plus a first handshake so the session is ready before the first
-// packet needs it.
+// Start starts the inner transport and the timer that drives handshake
+// retransmits and keepalives. The initiator also opens a first handshake so
+// the session is ready before the first packet needs it.
 func (e *EncryptedTransport) Start() error {
 	if err := e.Transport.Start(); err != nil {
 		return err
 	}
+	e.wg.Add(1)
+	go e.run()
 	if e.cfg.Initiator {
-		e.wg.Add(1)
-		go e.run()
 		now := e.now()
 		e.mu.Lock()
 		init := e.ensureHandshakeLocked(now)
@@ -224,7 +231,8 @@ func (e *EncryptedTransport) run() {
 }
 
 // tick retransmits the pending initiation every rekeyTimeout and gives up
-// after rekeyAttemptTime; the next packet to send then starts over.
+// after rekeyAttemptTime (the next packet to send then starts over), and
+// sends a keepalive when the peer's data went unanswered for keepaliveTimeout.
 func (e *EncryptedTransport) tick() {
 	now := e.now()
 	e.mu.Lock()
@@ -239,10 +247,25 @@ func (e *EncryptedTransport) tick() {
 			resend = p.packet
 		}
 	}
+	var keepalive *session
+	if s := e.current; s != nil && s.peerWaiting && now.Sub(s.lastRecvAt) >= keepaliveTimeout {
+		s.peerWaiting = false
+		keepalive = s
+	}
 	e.mu.Unlock()
+
 	if resend != nil {
 		if err := e.Transport.Send(resend); err != nil {
 			utils.Debugf("[CRYPTO] retransmit handshake initiation: %v", err)
+		}
+	}
+	if keepalive != nil {
+		frame, err := keepalive.seal(nil)
+		if err == nil {
+			err = e.Transport.Send(frame)
+		}
+		if err != nil {
+			utils.Debugf("[CRYPTO] send keepalive: %v", err)
 		}
 	}
 }
@@ -293,6 +316,7 @@ func (e *EncryptedTransport) sendInitiator(data []byte) error {
 	if s.unansweredSince.IsZero() {
 		s.unansweredSince = now
 	}
+	s.peerWaiting = false
 	e.mu.Unlock()
 
 	if init != nil {
@@ -312,6 +336,9 @@ func (e *EncryptedTransport) sendResponder(data []byte) error {
 	e.mu.Lock()
 	e.expireLocked(now)
 	s := e.current
+	if s != nil {
+		s.peerWaiting = false
+	}
 	e.mu.Unlock()
 	if s == nil {
 		return errNoSession
@@ -506,6 +533,7 @@ func (e *EncryptedTransport) handleInit(frame []byte) {
 	}
 	e.mu.Unlock()
 
+	utils.Debugf("[CRYPTO] answered handshake from %08x with session %08x (awaiting confirmation)", remoteIndex, idx)
 	resp := make([]byte, 0, handshakeRespSize)
 	resp = appendHeader(resp, msgHandshakeResp)
 	resp = binary.BigEndian.AppendUint32(resp, idx)
@@ -556,11 +584,17 @@ func (e *EncryptedTransport) handleResp(frame []byte) {
 		confirmed:   true,
 	}
 	e.sessions[s.localIndex] = s
+	rekey := e.current != nil
 	e.installCurrentLocked(s)
 	staged := e.staged
 	e.staged = nil
 	e.mu.Unlock()
 
+	if rekey {
+		utils.Debugf("[CRYPTO] rekeyed: session %08x with peer %08x", s.localIndex, s.remoteIndex)
+	} else {
+		utils.Debugf("[CRYPTO] session %08x established with peer %08x, flushing %d staged packets", s.localIndex, s.remoteIndex, len(staged))
+	}
 	for _, data := range staged {
 		frame, err := s.seal(data)
 		if err != nil {
@@ -644,13 +678,23 @@ func (e *EncryptedTransport) handleData(frame []byte) {
 	}
 	e.mu.Lock()
 	s.unansweredSince = time.Time{}
+	s.peerWaiting = true
+	s.lastRecvAt = now
+	confirmed := false
 	if !s.confirmed {
 		// First authenticated packet from the initiator: it holds the keys,
 		// so replies may now go over this session.
 		s.confirmed = true
+		confirmed = true
 		e.installCurrentLocked(s)
 	}
 	e.mu.Unlock()
+	if confirmed {
+		utils.Debugf("[CRYPTO] session %08x confirmed by peer %08x, replies now use it", s.localIndex, s.remoteIndex)
+	}
+	if len(plaintext) == 0 {
+		return // keepalive: it only had to authenticate
+	}
 	e.deliver(plaintext)
 }
 
