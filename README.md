@@ -231,6 +231,25 @@ Requires root / CAP_NET_RAW. Install the iptables rule (see
 Fallback for platforms where `l3` is unavailable (Windows without WinDivert,
 macOS, non-root Linux). Slower than `l3` (double TCP termination).
 
+### Exit node - multi-client admin panel
+
+```
+./openflux --role=exit-panel \
+    --panel-addr=127.0.0.1:8088 \
+    --panel-user=admin --panel-pass=CHANGE_ME \
+    --panel-data=./clients.json
+```
+
+Runs many clients in one process, each with its own transport (its own
+document/room) and its own independent `l4` tunnel — one client's traffic
+never crosses into another's. Clients are managed live through a local,
+login-gated web UI at `--panel-addr` (add/remove, see status and stats) with
+no restart needed; registrations persist to `--panel-data` and reload on the
+next start. `--panel-addr` should stay bound to `127.0.0.1`; reach it
+remotely over an SSH tunnel (`ssh -L 8088:127.0.0.1:8088 user@host`) rather
+than exposing it directly. `l3` isn't offered here — see the plain `--role=exit`
+above if you need raw SNAT/DNAT.
+
 ### Client - macOS utun (default on macOS)
 
 ```
@@ -315,7 +334,7 @@ Measure raw goodput through the transport, without touching the host network:
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--role` | `-r` | `client` | `client` \| `exit` \| `bench-send` \| `bench-sink` |
+| `--role` | `-r` | `client` | `client` \| `exit` \| `exit-panel` \| `bench-send` \| `bench-sink` |
 | `--inbound` | `-i` | (platform) | `tun` (macOS) \| `socks5` |
 | `--transport` | `-t` | `yandex` | `yandex` \| `vyandex` \| `oneme` \| `cupsonline` \| `mailru` |
 | `--mode` | `-m` | `l3` | Exit-node mode: `l3` \| `l4` |
@@ -327,6 +346,9 @@ Measure raw goodput through the transport, without touching the host network:
 | `--encryption-key-file` | | | AES-256-GCM shared secret file |
 | `--maxToken` | | | MAX auth token (`--transport=oneme`) |
 | `--maxUid` | | | MAX user id (`--transport=oneme`) |
+| `--panel-addr` | | `127.0.0.1:8088` | `--role=exit-panel` bind address |
+| `--panel-user` / `--panel-pass` | | | `--role=exit-panel` admin login (required) |
+| `--panel-data` | | `openflux-clients.json` | `--role=exit-panel` persisted client registry |
 | `--bench-bytes` | | `0` | MB to push (`--role=bench-send`) |
 | `--bench-compressible` | | `false` | Use compressible payload (bench) |
 
