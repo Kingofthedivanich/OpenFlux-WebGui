@@ -72,11 +72,11 @@ for entry in "${ABIS[@]}"; do
     CXX="$cxx" \
     CGO_CFLAGS="$march -O2" \
     CGO_CXXFLAGS="$march -O2" \
-    CGO_LDFLAGS="-Wl,-rpath,$RPATH_SYS -Wl,-rpath,$RPATH_VENDOR" \
+    CGO_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,-rpath,$RPATH_SYS -Wl,-rpath,$RPATH_VENDOR" \
     GOARM=7 \
     go build \
         -v \
-        -ldflags="-s -w -linkmode external -extldflags '-Wl,-rpath,$RPATH_SYS -Wl,-rpath,$RPATH_VENDOR' -checklinkname=0" \
+        -ldflags="-s -w -linkmode external -extldflags '-Wl,-z,max-page-size=16384 -Wl,-rpath,$RPATH_SYS -Wl,-rpath,$RPATH_VENDOR' -checklinkname=0" \
         -o "$out_dir/$BINARY_NAME" \
         .
 
