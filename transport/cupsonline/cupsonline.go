@@ -19,8 +19,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/utils"
+	"openflux/transport"
+	"openflux/utils"
 )
 
 const (
@@ -684,6 +684,7 @@ func NewCupsonlineTransport(rawURL string, cfg transport.TransportConfig, isClie
 	utils.Debugf("[CUPS] client mode: %d rooms from base64", len(t.urls))
 	return t
 }
+
 
 func (t *CupsonlineTransport) Start() error {
 	if t.clientErr != nil {

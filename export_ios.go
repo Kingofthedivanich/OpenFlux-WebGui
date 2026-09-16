@@ -18,12 +18,12 @@ import (
 	"time"
 	"unsafe"
 
-	"universal-bypass-tool/socks5"
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/transport/oneme"
-	"universal-bypass-tool/transport/yandex"
-	"universal-bypass-tool/tunnel"
-	"universal-bypass-tool/utils"
+	"openflux/socks5"
+	"openflux/transport"
+	"openflux/transport/oneme"
+	"openflux/transport/yandex"
+	"openflux/tunnel"
+	"openflux/utils"
 )
 
 // ---- log ring buffer piped into the app UI ----
@@ -124,8 +124,8 @@ const (
 
 // OpenFluxStartClient starts the SOCKS5 client tunnel.
 //
-// transportType: "yandex", "vyandex", or "oneme".
-// url:           Yandex.Docs document URL(s). Comma-separated for multi-stream.
+// transportType: "yandex" or "oneme".
+// url:           Yandex.Docs document URL (yandex transport).
 // socksAddr:     e.g. "127.0.0.1:1080".
 // maxToken/maxUid: credentials for the "oneme" (MAX) transport; pass "" for yandex.
 //
@@ -164,22 +164,17 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 	probe.Close()
 
 	config := transport.DefaultConfig()
-	var inner transport.Transport
+	var t transport.Transport
 	switch tt {
 	case "yandex", "":
-		urls := splitURLs(docURL)
-		inner = buildYandexInner(urls, config, false)
-	case "vyandex":
-		urls := splitURLs(docURL)
-		inner = buildYandexInner(urls, config, true)
+		t = transport.NewCompressedTransport(yandex.NewYandexDocsTransport(docURL, config))
 	case "oneme":
 		uidint, _ := strconv.ParseInt(mUid, 10, 64)
-		inner = oneme.NewOneMeTransport(false, mToken, uidint, config)
+		t = transport.NewCompressedTransport(oneme.NewOneMeTransport(false, mToken, uidint, config))
 	default:
 		utils.Debugf("[BRIDGE] Unknown transport type: %s", tt)
 		return C.int(startBadTransport)
 	}
-	var t transport.Transport = transport.NewCompressedTransport(inner)
 
 	if err := t.Start(); err != nil {
 		utils.Debugf("[BRIDGE] Failed to start transport: %v", err)

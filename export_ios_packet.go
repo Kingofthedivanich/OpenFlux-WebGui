@@ -19,11 +19,11 @@ import (
 	"time"
 	"unsafe"
 
-	"universal-bypass-tool/network"
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/transport/oneme"
-	"universal-bypass-tool/transport/yandex"
-	"universal-bypass-tool/utils"
+	"openflux/network"
+	"openflux/transport"
+	"openflux/transport/oneme"
+	"openflux/transport/yandex"
+	"openflux/utils"
 )
 
 // Packet-tunnel (NEPacketTunnelProvider) mode — pure L3 forwarding.

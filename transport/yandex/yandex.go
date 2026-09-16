@@ -16,8 +16,16 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"universal-bypass-tool/transport"
-	"universal-bypass-tool/utils"
+	"openflux/transport"
+	"openflux/utils"
+)
+
+// Precompiled once. cursorPayloadRe in particular runs on every inbound
+// message, so compiling it per call (as before) was pure overhead on the hot
+// receive path.
+var (
+	cursorPayloadRe = regexp.MustCompile(`"cursor":"[^;]+;([^"]+)"`)
+	clientConfigRe  = regexp.MustCompile(`<script[^>]*id="client-config"[^>]*>(.*?)</script>`)
 )
 
 type YandexDocsInfo struct {
@@ -65,6 +73,7 @@ func NewYandexDocsTransport(url string, config transport.TransportConfig) *Yande
 	t.baseUserID = randUserID()
 	return t
 }
+
 
 func (t *YandexDocsTransport) Start() error {
 	if err := t.BaseTransport.Start(); err != nil {
@@ -201,6 +210,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 			if err != nil {
 				utils.Debugf("[YDOCS] Read error: %v", err)
 				t.SetConnected(false)
+				conn.Close()
 				// If the session was healthy for a while, treat the next
 				// connect as fresh (attempt -1 -> next attempt 0) so backoff
 				// doesn't keep growing across normal long-lived reconnects.
@@ -217,27 +227,52 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 }
 
 func (t *YandexDocsTransport) writerLoop() {
-	for t.IsRunning() {
+	// The write queue is created once and preserved across reconnects, so we
+	// capture it and block on it instead of polling with a 10ms sleep. The old
+	// poll added up to 10ms of latency to every send and woke the CPU 100x/sec
+	// while idle.
+	var queue chan []byte
+	for t.IsRunning() && queue == nil {
 		t.Mu.Lock()
-		session := t.session
+		if t.session != nil {
+			queue = t.session.WriteQueue
+		}
 		t.Mu.Unlock()
+		if queue == nil {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if queue == nil {
+		return
+	}
 
+	var pending []byte
+	for t.IsRunning() {
+		if pending == nil {
+			packet, ok := <-queue
+			if !ok {
+				return
+			}
+			pending = packet
+		}
+
+		t.Mu.RLock()
+		session := t.session
+		t.Mu.RUnlock()
 		if session == nil || session.Conn == nil {
-			time.Sleep(10 * time.Millisecond)
+			// Mid-reconnect: hold the packet and retry rather than drop it.
+			time.Sleep(15 * time.Millisecond)
 			continue
 		}
 
-		select {
-		case packet := <-session.WriteQueue:
-			payload := base64.StdEncoding.EncodeToString(packet)
-			msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s"}]`, payload)
-
-			if err := session.safeWrite(websocket.TextMessage, []byte(msg)); err != nil {
-				utils.Debugf("[YDOCS] Write error: %v", err)
-			}
-		default:
-			time.Sleep(10 * time.Millisecond)
+		payload := base64.StdEncoding.EncodeToString(pending)
+		msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s"}]`, payload)
+		if err := session.safeWrite(websocket.TextMessage, []byte(msg)); err != nil {
+			utils.Debugf("[YDOCS] Write error: %v", err)
+			time.Sleep(15 * time.Millisecond)
+			continue // keep pending; the reconnect will bring up a new conn
 		}
+		pending = nil
 	}
 }
 
@@ -310,8 +345,7 @@ func (t *YandexDocsTransport) extractBase64String(response string) string {
 		return response[left : left+right]
 	}
 
-	re := regexp.MustCompile(`"cursor":"[^;]+;([^"]+)"`)
-	matches := re.FindStringSubmatch(response)
+	matches := cursorPayloadRe.FindStringSubmatch(response)
 	if len(matches) > 1 {
 		return matches[1]
 	}
@@ -337,18 +371,26 @@ func (t *YandexDocsTransport) scheduleReconnect(attempt int) {
 	t.connectToDoc(next)
 }
 
-// reconnectBackoff returns an exponential backoff with jitter, capped at 15s.
+// reconnectBackoff returns an exponential backoff with jitter, capped at 30s.
+//
+// Each reconnect dials a brand new WebSocket, which the doc-collab server
+// registers as a brand new participant in the doc's room regardless of
+// client-side user-id reuse - a fast connect/close/reconnect loop piles up
+// visible "ghost" participants quickly (confirmed by logging the server's
+// participant-list messages during a failure streak). The floor here (was
+// 500ms) is raised to slow that churn down; this doesn't change steady-state
+// throughput since successful connects never hit backoff at all.
 func reconnectBackoff(n int) time.Duration {
 	if n < 1 {
 		n = 1
 	}
 	shift := n - 1
-	if shift > 5 {
-		shift = 5
+	if shift > 4 {
+		shift = 4
 	}
-	d := 500 * time.Millisecond * time.Duration(1<<uint(shift))
-	if d > 15*time.Second {
-		d = 15 * time.Second
+	d := 1500 * time.Millisecond * time.Duration(1<<uint(shift))
+	if d > 30*time.Second {
+		d = 30 * time.Second
 	}
 	// add up to +50% jitter
 	d += time.Duration(rand.Int63n(int64(d/2) + 1))
@@ -386,8 +428,7 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 		cookies = append(cookies, fmt.Sprintf("%s=%s", c.Name, c.Value))
 	}
 
-	re := regexp.MustCompile(`<script[^>]*id="client-config"[^>]*>(.*?)</script>`)
-	matches := re.FindStringSubmatch(html)
+	matches := clientConfigRe.FindStringSubmatch(html)
 	if len(matches) < 2 {
 		// Help diagnose: is this a login page, a new-editor page, etc.?
 		hint := "no client-config script"
