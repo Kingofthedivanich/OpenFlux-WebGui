@@ -29,6 +29,27 @@ The author **is not responsible** for:
 
 The original code is provided **as is**, **without any warranties**.
 
+## This fork
+
+Fork of [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux)
+(based on `0.0.3`). Changes on top of upstream:
+
+- **Multi-client exit node + local web admin panel** (`--role=exit-panel`) —
+  run many clients in one process, each on its own Yandex.Docs / Volga / MAX /
+  Cups.online / Mail.ru document or room, with a login-gated local web UI to
+  add and remove them live — no restart needed. See
+  [Exit node - multi-client admin panel](#exit-node---multi-client-admin-panel).
+- **10 correctness/robustness fixes** on the exit-node path, found via code
+  review and each with a regression test: two remote-triggerable panics that
+  could crash the whole process, a decompression-bomb DoS in the legacy
+  codec, `--local-ip` being silently ignored, a client RST never reaching the
+  real destination server, an unbounded memory leak, silently-swallowed
+  transport send errors, a conntrack lock that blocked all packet forwarding
+  during its periodic sweep, and no graceful shutdown on SIGTERM.
+- `build_android.sh` is now host-OS aware (macOS/Linux/Windows) and builds
+  all three ABIs the [Android app fork](https://github.com/Kingofthedivanich/OpenFluxAndroid)
+  ships, instead of just `arm64-v8a` from a macOS host.
+
 ## Clients
 
 | Platform | Download | Notes |
