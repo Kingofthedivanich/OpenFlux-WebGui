@@ -75,6 +75,18 @@ func (f *fakeDocServer) push(t *testing.T, msg string) {
 	}
 }
 
+func (f *fakeDocServer) countReceived(sub string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, m := range f.recv {
+		if strings.Contains(m, sub) {
+			n++
+		}
+	}
+	return n
+}
+
 func (f *fakeDocServer) received(sub string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -220,4 +232,65 @@ func TestYandexDocsTransportStopInterruptsHangingFetch(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 	stopQuickly(t, tr)
+}
+
+// A participant list with nobody but us means the peer left the document: it
+// no longer counts as heard from until it sends again.
+func TestYandexDocsTransportForgetsPeerWhenAlone(t *testing.T) {
+	srv := newFakeDocServer(t)
+	tr := newTestTransport(srv.pageURL)
+	if err := tr.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer tr.Stop()
+	waitFor(t, "connect", 5*time.Second, func() bool { return tr.IsConnected() && srv.connCount() == 1 })
+
+	heard := func() bool { return !tr.Stats().LastRecv.IsZero() }
+	const ka = `42["message",{"type":"cursor","messages":[{"cursor":"18;---KA---"}]}]`
+	srv.push(t, `40{"sid":"me"}`)
+	srv.push(t, ka)
+	waitFor(t, "peer keepalive", 2*time.Second, heard)
+
+	// Someone else is still listed: nothing changes.
+	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"},{"connectionId":"peer"}]}]`)
+	srv.push(t, `42["message",{"type":"auth","sessionId":"me","participants":[{"connectionId":"peer"}]}]`)
+	time.Sleep(100 * time.Millisecond)
+	if !heard() {
+		t.Fatal("peer forgotten while still listed")
+	}
+
+	// Only us left.
+	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"}]}]`)
+	waitFor(t, "peer forgotten", 2*time.Second, func() bool { return !heard() })
+
+	srv.push(t, ka)
+	waitFor(t, "peer heard again", 2*time.Second, heard)
+	srv.push(t, `42["message",{"type":"auth","sessionId":"me","participants":[]}]`)
+	waitFor(t, "peer forgotten on empty list", 2*time.Second, func() bool { return !heard() })
+}
+
+// The peer hears us as soon as we join, and again whenever a participant list
+// shows someone else (a peer that just joined), without waiting for the
+// keepalive tick.
+func TestYandexDocsTransportGreetsPeer(t *testing.T) {
+	srv := newFakeDocServer(t)
+	tr := newTestTransport(srv.pageURL)
+	tr.BaseTransport = transport.NewBaseTransport(transport.TransportConfig{
+		MaxReconnectAttempts: 10, MaxQueueSize: 16, KeepAliveInterval: time.Hour,
+	})
+	if err := tr.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer tr.Stop()
+	waitFor(t, "keepalive on join", 5*time.Second, func() bool { return srv.countReceived("---KA---") == 1 })
+
+	srv.push(t, `40{"sid":"me"}`)
+	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"},{"connectionId":"peer"}]}]`)
+	waitFor(t, "keepalive for new participant", 2*time.Second, func() bool { return srv.countReceived("---KA---") == 2 })
+
+	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"}]}]`)
+	time.Sleep(100 * time.Millisecond)
+	if n := srv.countReceived("---KA---"); n != 2 {
+		t.Fatalf("keepalive sent with nobody else in the document (%d total)", n)
+	}
 }

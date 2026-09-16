@@ -49,6 +49,10 @@ type DocSession struct {
 	WriteQueue chan []byte
 	UserID     string
 	writeMu    sync.Mutex
+
+	// connID is this connection's id on the server (the Socket.IO sid), as
+	// listed in participant lists. Read loop only.
+	connID string
 }
 
 func (s *DocSession) safeWrite(messageType int, data []byte) error {
@@ -290,6 +294,9 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		}
 		messagePart, _ := json.Marshal([]interface{}{"message", authData})
 		session.safeWrite(websocket.TextMessage, []byte(fmt.Sprintf("42%s", string(messagePart))))
+		// Let a peer already in the document hear us now rather than at our
+		// next keepalive tick.
+		session.safeWrite(websocket.TextMessage, []byte(keepAliveFrame))
 
 		connectedAt := time.Now()
 		for t.IsRunning() {
@@ -373,10 +380,13 @@ func (t *YandexDocsTransport) writerLoop() {
 	}
 }
 
+// keepAliveFrame is a cursor message the peer recognizes and drops; it keeps
+// the session warm and tells the peer this document reaches us.
+const keepAliveFrame = `42["message",{"type":"cursor","cursor":"18;---KA---"}]`
+
 func (t *YandexDocsTransport) keepAliveLoop() {
 	ticker := time.NewTicker(t.GetConfig().KeepAliveInterval)
 	defer ticker.Stop()
-	keepAliveMsg := `42["message",{"type":"cursor","cursor":"18;---KA---"}]`
 
 	ctx := t.runCtx()
 	for t.IsRunning() {
@@ -390,7 +400,7 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 		t.Mu.Unlock()
 
 		if session != nil && session.Conn != nil {
-			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveMsg)); err != nil {
+			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveFrame)); err != nil {
 				utils.Debugf("[YDOCS] Keep-alive failed: %v", err)
 				// A failed write leaves the conn unusable for writes while
 				// reads may still block for a long time. Close it so the read
@@ -428,6 +438,15 @@ func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 		return
 	}
 
+	// Participant lists: the server's Socket.IO connect frame gives our
+	// connection id, the auth reply and connectState pushes list who is in
+	// the document.
+	if strings.HasPrefix(text, "40{") ||
+		strings.Contains(text, `"type":"auth"`) || strings.Contains(text, `"type":"connectState"`) {
+		t.handleParticipants(session, text)
+		return
+	}
+
 	// Socket.IO ping - respond with pong (use safeWrite)
 	if text == "2" {
 		if session != nil && session.Conn != nil {
@@ -454,6 +473,51 @@ func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 		t.RecordReceive(len(decoded))
 		t.CallReceive(decoded)
 	}
+}
+
+// handleParticipants tracks our connection id and reacts to participant
+// lists. A list with nobody but us means the peer has left this document (or
+// sits on another document backend, where nothing reaches it): forget that it
+// was heard from, so a multi-stream tunnel stops routing here at once instead
+// of after the keepalive timeout. A longer list proves nothing (stale
+// participants linger for a while), so only the peer's traffic marks it back;
+// we just send a keepalive so a newly joined peer hears us right away.
+func (t *YandexDocsTransport) handleParticipants(session *DocSession, text string) {
+	if session == nil {
+		return
+	}
+	if strings.HasPrefix(text, "40{") {
+		var connect struct {
+			Sid string `json:"sid"`
+		}
+		if json.Unmarshal([]byte(text[2:]), &connect) == nil {
+			session.connID = connect.Sid
+		}
+		return
+	}
+
+	var frame []json.RawMessage
+	if !strings.HasPrefix(text, "42") || json.Unmarshal([]byte(text[2:]), &frame) != nil || len(frame) < 2 {
+		return
+	}
+	var msg struct {
+		Participants []struct {
+			ConnectionID string `json:"connectionId"`
+		} `json:"participants"`
+	}
+	if json.Unmarshal(frame[1], &msg) != nil || msg.Participants == nil || session.connID == "" {
+		return
+	}
+	for _, p := range msg.Participants {
+		if p.ConnectionID != session.connID {
+			// Someone else is here, possibly the peer that just (re)joined:
+			// greet it so it hears us without waiting for our next tick.
+			session.safeWrite(websocket.TextMessage, []byte(keepAliveFrame))
+			return
+		}
+	}
+	utils.Debugf("[YDOCS] no other participant in the document")
+	t.ForgetPeer()
 }
 
 func (t *YandexDocsTransport) extractBase64String(response string) string {

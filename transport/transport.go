@@ -32,7 +32,8 @@ type TransportStats struct {
 	Connected     bool
 	Uptime        time.Duration
 	// LastRecv is when anything last arrived from the remote peer: a data
-	// frame or a transport-level keepalive. Zero if nothing has arrived yet.
+	// frame or a transport-level keepalive. Zero if nothing has arrived yet,
+	// or since the transport learned that the peer left.
 	// MultiStreamTransport uses it to tell a stream that is merely connected
 	// to its relay from one that actually reaches the peer.
 	LastRecv time.Time
@@ -155,6 +156,12 @@ func (b *BaseTransport) RecordReceive(bytes int) {
 // frame, for transport-level keepalives that carry no tunnel payload.
 func (b *BaseTransport) RecordPeerActivity() {
 	b.lastRecv.Store(time.Now().UnixNano())
+}
+
+// ForgetPeer clears LastRecv when the transport learns that the peer has left,
+// so the peer counts as not heard from until it sends again.
+func (b *BaseTransport) ForgetPeer() {
+	b.lastRecv.Store(0)
 }
 
 func (b *BaseTransport) RecordReconnect() {

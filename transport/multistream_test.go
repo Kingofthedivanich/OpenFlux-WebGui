@@ -365,3 +365,48 @@ func TestMultiStreamStopStopsEveryStream(t *testing.T) {
 		t.Fatal("Send succeeded after Stop")
 	}
 }
+
+// A flow is sent back over the stream its packets arrive on, so when the peer
+// moves a connection to another document the replies follow at once instead of
+// going into the document the peer just lost.
+func TestMultiStreamFlowFollowsPeer(t *testing.T) {
+	streams := []*mockStream{newAlive(), newAlive()}
+	ms := startMS(t, streams...)
+	ms.Receive(func([]byte) {})
+	now := time.Now()
+	ms.now = func() time.Time { return now }
+	out := tcpPacket(clientIP, serverIP, 53000, 443, 1)
+	in := tcpPacket(serverIP, clientIP, 443, 53000, 2)
+
+	before := counts(streams)
+	ms.Send(out)
+	home := whichStream(t, streams, before)
+	other := 1 - home
+
+	// The peer switched the flow to the other stream.
+	streams[other].inject(in)
+	before = counts(streams)
+	ms.Send(out)
+	if got := whichStream(t, streams, before); got != other {
+		t.Fatalf("reply went to stream %d, want %d where the flow arrived", got, other)
+	}
+
+	// The followed stream goes down: back to the hash choice.
+	streams[other].connected.Store(false)
+	before = counts(streams)
+	ms.Send(out)
+	if got := whichStream(t, streams, before); got != home {
+		t.Fatalf("with the followed stream down, went to %d, want %d", got, home)
+	}
+	streams[other].connected.Store(true)
+
+	// A stale arrival no longer steers the flow.
+	now = now.Add(2 * DefaultPeerTimeout)
+	streams[0].lastRecv.Store(now.UnixNano())
+	streams[1].lastRecv.Store(now.UnixNano())
+	before = counts(streams)
+	ms.Send(out)
+	if got := whichStream(t, streams, before); got != home {
+		t.Fatalf("stale arrival still steered the flow to %d", got)
+	}
+}

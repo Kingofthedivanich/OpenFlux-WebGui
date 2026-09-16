@@ -306,11 +306,14 @@ How it works:
 - Each TCP connection is pinned to one document; different connections spread
   over the documents. Spreading the packets of one connection over documents
   would reorder them and collapse its throughput.
-- A document is preferred while the peer's keepalives arrive on it. A document
-  that is connected but no longer reaches the peer (the peer dropped out, or
-  landed on another document backend) stops getting traffic after 25s; a
-  disconnected one immediately. Its connections move to another document and
-  come back when it recovers.
+- A document is preferred while the peer's keepalives arrive on it. A
+  disconnected document stops getting traffic immediately; so does one whose
+  participant list shows nobody but us (the peer left). One that is connected
+  but silent for another reason (e.g. the peer landed on another document
+  backend) is dropped after 25s.
+- A connection's packets are sent over the document its packets last arrived
+  on. When one side moves a connection to another document, the other side
+  follows at once instead of sending its ACKs into the lost document.
 - A single URL keeps the exact single-document behavior.
 
 `--multistream-status` logs one line per interval:

@@ -14,6 +14,11 @@ import (
 // exchange a keepalive every 10s, so this tolerates one lost keepalive.
 const DefaultPeerTimeout = 25 * time.Second
 
+// followSlots is the size of the table that remembers, per flow, the stream a
+// packet of the flow last arrived on. A power of two; two flows sharing a slot
+// only cost one of them its hint.
+const followSlots = 1 << 12
+
 // MultiStreamTransport fans a single logical tunnel out over N inner
 // transports (issue #50), one per document. Each inner transport is a complete
 // stack of its own (codec, optional encryption, relay), so every document
@@ -33,14 +38,24 @@ const DefaultPeerTimeout = 25 * time.Second
 // "Connected" alone is not enough: a Yandex session can be up while the peer
 // is on another document backend, or has dropped out of the document, and
 // then everything sent on it is lost. The peer's keepalives are the signal
-// that the document actually reaches the other side. When the preferred
-// stream of a flow is unusable, the flow moves to the next usable one and
-// comes back when it recovers; each move costs the inner TCP one reordering
-// event, not a stall.
+// that the document actually reaches the other side.
+//
+// A flow follows the peer: it is sent over the stream its packets last
+// arrived on (while that stream is usable), and only a flow with no recent
+// inbound packet is placed by hash. When one side loses a document it moves
+// its flows to another one at once, but the other side may not notice the loss
+// until the keepalive timeout; without following, it would keep sending the
+// flow's ACKs into the lost document and stall the connection. A move costs
+// the inner TCP one reordering event, not a stall.
 type MultiStreamTransport struct {
 	streams     []Transport
 	peerTimeout time.Duration
 	now         func() time.Time
+
+	// follow[h & (followSlots-1)] = tag(32) | stream+1 (8) | unix seconds (24)
+	// of the last packet of flow h received. Lock-free: one atomic word per
+	// slot.
+	follow [followSlots]atomic.Uint64
 
 	// Round-robin cursor for packets that are not IP (no flow to pin).
 	rr      atomic.Uint64
@@ -120,19 +135,34 @@ func (m *MultiStreamTransport) Send(data []byte) error {
 		return fmt.Errorf("multistream: no inner streams")
 	}
 
+	now := m.now()
 	var start uint64
+	hint := -1
 	if h, ok := FlowHash(data); ok {
 		start = h % n
+		hint = m.followHint(h, now)
 	} else {
 		start = (m.rr.Add(1) - 1) % n
 	}
 
-	now := m.now()
 	// Pass 0 takes streams that reach the peer, pass 1 the ones that are only
-	// connected.
+	// connected. Within a pass the stream the flow last arrived on goes first
+	// (i == -1), then the hash order.
 	for pass := 0; pass < 2; pass++ {
-		for i := uint64(0); i < n; i++ {
-			s := m.streams[(start+i)%n]
+		for i := -1; i < int(n); i++ {
+			var idx int
+			if i < 0 {
+				if hint < 0 {
+					continue
+				}
+				idx = hint
+			} else {
+				idx = int((start + uint64(i)) % n)
+				if idx == hint {
+					continue
+				}
+			}
+			s := m.streams[idx]
 			st := s.Stats()
 			if !st.Connected || m.peerAlive(st, now) != (pass == 0) {
 				continue
@@ -143,6 +173,34 @@ func (m *MultiStreamTransport) Send(data []byte) error {
 		}
 	}
 	return fmt.Errorf("multistream: no usable stream (of %d)", n)
+}
+
+// noteArrival records that a packet of pkt's flow arrived on stream idx.
+func (m *MultiStreamTransport) noteArrival(idx int, pkt []byte) {
+	h, ok := FlowHash(pkt)
+	if !ok {
+		return
+	}
+	v := h>>32<<32 | uint64(idx+1)<<24 | uint64(m.now().Unix())&0xffffff
+	m.follow[h&(followSlots-1)].Store(v)
+}
+
+// followHint returns the stream flow h last arrived on within the peer
+// timeout, or -1.
+func (m *MultiStreamTransport) followHint(h uint64, now time.Time) int {
+	v := m.follow[h&(followSlots-1)].Load()
+	if v == 0 || v>>32 != h>>32 {
+		return -1
+	}
+	age := (uint64(now.Unix()) - v) & 0xffffff
+	if time.Duration(age)*time.Second > m.peerTimeout {
+		return -1
+	}
+	idx := int(v>>24&0xff) - 1
+	if idx < 0 || idx >= len(m.streams) {
+		return -1
+	}
+	return idx
 }
 
 func (m *MultiStreamTransport) peerAlive(st TransportStats, now time.Time) bool {
@@ -161,8 +219,9 @@ func (m *MultiStreamTransport) Receive(cb func([]byte)) {
 	m.mu.Lock()
 	m.userCb = cb
 	m.mu.Unlock()
-	for _, s := range m.streams {
+	for i, s := range m.streams {
 		s.Receive(func(data []byte) {
+			m.noteArrival(i, data)
 			m.mu.RLock()
 			u := m.userCb
 			m.mu.RUnlock()
