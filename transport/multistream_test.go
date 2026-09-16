@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -10,18 +11,34 @@ import (
 )
 
 // mockStream is a Transport we can flip up/down and inspect. Deliberately
-// separate from batched_test.go's fakeTransport because we need per-stream
-// state for the multi-stream tests (that fake is loopback-only).
+// separate from batched_test.go's fakeTransport because the multi-stream tests
+// need per-stream state (connectivity, peer liveness, send failures).
 type mockStream struct {
 	mu        sync.Mutex
 	connected atomic.Bool
+	lastRecv  atomic.Int64 // unix nanos; 0 = peer never heard from
+	failSend  atomic.Bool
+	stopped   atomic.Bool
+	startErr  error
 	sent      [][]byte
 	cb        func([]byte)
-	failSend  atomic.Bool
 }
 
-func (m *mockStream) Start() error { m.connected.Store(true); return nil }
-func (m *mockStream) Stop() error  { m.connected.Store(false); return nil }
+// newAlive returns a connected stream whose peer was just heard from.
+func newAlive() *mockStream {
+	m := &mockStream{}
+	m.connected.Store(true)
+	m.lastRecv.Store(time.Now().UnixNano())
+	return m
+}
+
+func (m *mockStream) Start() error {
+	if m.startErr != nil {
+		return m.startErr
+	}
+	return nil
+}
+func (m *mockStream) Stop() error { m.stopped.Store(true); m.connected.Store(false); return nil }
 func (m *mockStream) Send(data []byte) error {
 	if m.failSend.Load() {
 		return fmt.Errorf("mock: send failure")
@@ -37,8 +54,14 @@ func (m *mockStream) Receive(cb func([]byte)) {
 	m.cb = cb
 	m.mu.Unlock()
 }
-func (m *mockStream) IsConnected() bool     { return m.connected.Load() }
-func (m *mockStream) Stats() TransportStats { return TransportStats{Connected: m.IsConnected()} }
+func (m *mockStream) IsConnected() bool { return m.connected.Load() }
+func (m *mockStream) Stats() TransportStats {
+	st := TransportStats{Connected: m.IsConnected(), PacketsSent: uint64(m.sentCount())}
+	if ns := m.lastRecv.Load(); ns != 0 {
+		st.LastRecv = time.Unix(0, ns)
+	}
+	return st
+}
 func (m *mockStream) inject(data []byte) {
 	m.mu.Lock()
 	cb := m.cb
@@ -53,182 +76,292 @@ func (m *mockStream) sentCount() int {
 	return len(m.sent)
 }
 
-// N=3 healthy streams should each get exactly 1/3 of the packets.
-func TestMultiStreamRoundRobinHealthy(t *testing.T) {
-	a, b, c := &mockStream{}, &mockStream{}, &mockStream{}
-	ms := NewMultiStreamTransport([]Transport{a, b, c})
+// tcpPacket builds a minimal IPv4/TCP packet for flow a:ap -> b:bp.
+func tcpPacket(a, b [4]byte, ap, bp uint16, payload byte) []byte {
+	pkt := make([]byte, 41)
+	pkt[0] = 0x45
+	binary.BigEndian.PutUint16(pkt[2:4], uint16(len(pkt)))
+	pkt[8] = 64
+	pkt[9] = 6
+	copy(pkt[12:16], a[:])
+	copy(pkt[16:20], b[:])
+	binary.BigEndian.PutUint16(pkt[20:22], ap)
+	binary.BigEndian.PutUint16(pkt[22:24], bp)
+	pkt[40] = payload
+	return pkt
+}
+
+var (
+	clientIP = [4]byte{10, 10, 10, 2}
+	serverIP = [4]byte{93, 184, 216, 34}
+)
+
+func startMS(t *testing.T, streams ...*mockStream) *MultiStreamTransport {
+	t.Helper()
+	inners := make([]Transport, len(streams))
+	for i, s := range streams {
+		inners[i] = s
+	}
+	ms := NewMultiStreamTransport(inners)
 	if err := ms.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer ms.Stop()
+	t.Cleanup(func() { ms.Stop() })
+	return ms
+}
 
+// whichStream returns the index of the only stream that got packets since the
+// given per-stream counts, failing if the packets were split.
+func whichStream(t *testing.T, streams []*mockStream, before []int) int {
+	t.Helper()
+	got := -1
+	for i, s := range streams {
+		if s.sentCount() != before[i] {
+			if got != -1 {
+				t.Fatalf("flow split across streams %d and %d", got, i)
+			}
+			got = i
+		}
+	}
+	if got == -1 {
+		t.Fatal("no stream got the packets")
+	}
+	return got
+}
+
+func counts(streams []*mockStream) []int {
+	out := make([]int, len(streams))
+	for i, s := range streams {
+		out[i] = s.sentCount()
+	}
+	return out
+}
+
+// Every packet of one connection, in both directions, must use one stream:
+// spreading a connection over documents reorders its packets.
+func TestMultiStreamPinsFlowToOneStream(t *testing.T) {
+	streams := []*mockStream{newAlive(), newAlive(), newAlive()}
+	ms := startMS(t, streams...)
+
+	for port := uint16(40000); port < 40050; port++ {
+		before := counts(streams)
+		for i := 0; i < 20; i++ {
+			if err := ms.Send(tcpPacket(clientIP, serverIP, port, 443, byte(i))); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if err := ms.Send(tcpPacket(serverIP, clientIP, 443, port, byte(i))); err != nil {
+				t.Fatalf("Send reverse: %v", err)
+			}
+		}
+		whichStream(t, streams, before)
+	}
+}
+
+// Many connections spread over all streams.
+func TestMultiStreamSpreadsFlows(t *testing.T) {
+	streams := []*mockStream{newAlive(), newAlive(), newAlive()}
+	ms := startMS(t, streams...)
+
+	const flows = 3000
+	for port := 0; port < flows; port++ {
+		if err := ms.Send(tcpPacket(clientIP, serverIP, uint16(20000+port), 443, 0)); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+	}
+	for i, s := range streams {
+		if n := s.sentCount(); n < flows/5 || n > flows/2 {
+			t.Errorf("stream %d got %d of %d flows; want roughly a third", i, n, flows)
+		}
+	}
+}
+
+// A flow whose stream goes down moves to another stream, and comes back when
+// the stream recovers.
+func TestMultiStreamFlowFailsOverAndReturns(t *testing.T) {
+	streams := []*mockStream{newAlive(), newAlive()}
+	ms := startMS(t, streams...)
+	pkt := tcpPacket(clientIP, serverIP, 51000, 443, 1)
+
+	before := counts(streams)
+	ms.Send(pkt)
+	home := whichStream(t, streams, before)
+	other := 1 - home
+
+	streams[home].connected.Store(false)
+	before = counts(streams)
+	for i := 0; i < 10; i++ {
+		if err := ms.Send(pkt); err != nil {
+			t.Fatalf("Send with home stream down: %v", err)
+		}
+	}
+	if got := whichStream(t, streams, before); got != other {
+		t.Fatalf("flow went to stream %d while its home %d was down", got, home)
+	}
+
+	streams[home].connected.Store(true)
+	before = counts(streams)
+	ms.Send(pkt)
+	if got := whichStream(t, streams, before); got != home {
+		t.Fatalf("flow did not return home after recovery: went to %d", got)
+	}
+}
+
+// A connected stream whose peer has gone silent (the peer dropped out of the
+// document, or sits on another backend) must not get traffic while a stream
+// with a live peer exists.
+func TestMultiStreamAvoidsStreamWithSilentPeer(t *testing.T) {
+	streams := []*mockStream{newAlive(), newAlive()}
+	ms := startMS(t, streams...)
+	now := time.Now()
+	ms.now = func() time.Time { return now }
+
+	streams[0].lastRecv.Store(now.Add(-2 * DefaultPeerTimeout).UnixNano())
+	for port := uint16(1000); port < 1100; port++ {
+		ms.Send(tcpPacket(clientIP, serverIP, port, 443, 0))
+	}
+	if n := streams[0].sentCount(); n != 0 {
+		t.Fatalf("stream with a silent peer got %d packets", n)
+	}
+	if !ms.PeerAlive(1) || ms.PeerAlive(0) {
+		t.Fatalf("PeerAlive = %v,%v; want false,true", ms.PeerAlive(0), ms.PeerAlive(1))
+	}
+}
+
+// Before any peer is heard from (startup), connected streams are used anyway,
+// still pinned per flow.
+func TestMultiStreamUsesConnectedStreamsBeforePeerIsHeard(t *testing.T) {
+	a, b := &mockStream{}, &mockStream{}
+	a.connected.Store(true)
+	b.connected.Store(true)
+	streams := []*mockStream{a, b}
+	ms := startMS(t, a, b)
+
+	for port := uint16(2000); port < 2200; port++ {
+		before := counts(streams)
+		if err := ms.Send(tcpPacket(clientIP, serverIP, port, 443, 0)); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		ms.Send(tcpPacket(clientIP, serverIP, port, 443, 1))
+		whichStream(t, streams, before)
+	}
+	if a.sentCount() == 0 || b.sentCount() == 0 {
+		t.Fatalf("flows not spread before peer liveness is known: a=%d b=%d", a.sentCount(), b.sentCount())
+	}
+}
+
+// A failed Send on the flow's stream goes to the next stream: the packet is
+// not lost.
+func TestMultiStreamFailoverOnSendError(t *testing.T) {
+	streams := []*mockStream{newAlive(), newAlive()}
+	ms := startMS(t, streams...)
+	pkt := tcpPacket(clientIP, serverIP, 52000, 443, 1)
+
+	before := counts(streams)
+	ms.Send(pkt)
+	home := whichStream(t, streams, before)
+
+	streams[home].failSend.Store(true)
+	before = counts(streams)
+	if err := ms.Send(pkt); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got := whichStream(t, streams, before); got == home {
+		t.Fatal("packet stayed on the failing stream")
+	}
+}
+
+func TestMultiStreamAllDown(t *testing.T) {
+	a, b := &mockStream{}, &mockStream{}
+	ms := startMS(t, a, b)
+	if err := ms.Send(tcpPacket(clientIP, serverIP, 1, 2, 0)); err == nil {
+		t.Fatal("Send succeeded with every stream down")
+	}
+}
+
+// Non-IP payloads have no flow; they rotate over the streams.
+func TestMultiStreamNonIPRoundRobin(t *testing.T) {
+	a, b, c := newAlive(), newAlive(), newAlive()
+	ms := startMS(t, a, b, c)
 	for i := 0; i < 30; i++ {
-		if err := ms.Send([]byte{byte(i)}); err != nil {
+		if err := ms.Send([]byte{0x00, byte(i)}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}
 	if a.sentCount() != 10 || b.sentCount() != 10 || c.sentCount() != 10 {
-		t.Fatalf("uneven RR distribution: a=%d b=%d c=%d", a.sentCount(), b.sentCount(), c.sentCount())
+		t.Fatalf("uneven rotation: a=%d b=%d c=%d", a.sentCount(), b.sentCount(), c.sentCount())
 	}
 }
 
-// A stream that reports IsConnected()=false must be skipped without hanging or
-// erroring, and every packet must land on a healthy peer.
-func TestMultiStreamSkipsDisconnected(t *testing.T) {
-	a, b := &mockStream{}, &mockStream{}
-	ms := NewMultiStreamTransport([]Transport{a, b})
-	if err := ms.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer ms.Stop()
-
-	// Simulate 'a' dying (its own IsConnected flips false; MultiStream sees it
-	// on the next Send).
-	a.Stop()
-
-	for i := 0; i < 10; i++ {
-		if err := ms.Send([]byte{1}); err != nil {
-			t.Fatalf("Send %d over 1 live stream: %v", i, err)
-		}
-	}
-	if a.sentCount() != 0 {
-		t.Fatalf("dead stream received %d packets", a.sentCount())
-	}
-	if b.sentCount() != 10 {
-		t.Fatalf("live stream missed packets: got %d", b.sentCount())
-	}
-}
-
-// Same but a healthy stream whose Send() returns an error (queue full,
-// mid-reconnect) must NOT drop the packet — MultiStream tries the next.
-func TestMultiStreamFailoverOnSendError(t *testing.T) {
-	a, b := &mockStream{}, &mockStream{}
-	ms := NewMultiStreamTransport([]Transport{a, b})
-	_ = ms.Start()
-	defer ms.Stop()
-
-	a.failSend.Store(true) // a is up but transiently refusing writes
-
-	for i := 0; i < 5; i++ {
-		if err := ms.Send([]byte{9}); err != nil {
-			t.Fatalf("Send should have failed over to b: %v", err)
-		}
-	}
-	if a.sentCount() != 0 {
-		t.Fatalf("failing stream unexpectedly stored packets: %d", a.sentCount())
-	}
-	if b.sentCount() != 5 {
-		t.Fatalf("failover target should have all 5: got %d", b.sentCount())
-	}
-}
-
-// All streams down -> error, so the caller can back off.
-func TestMultiStreamAllDown(t *testing.T) {
-	a, b := &mockStream{}, &mockStream{}
-	ms := NewMultiStreamTransport([]Transport{a, b})
-	_ = ms.Start()
-	defer ms.Stop()
-
-	a.Stop()
-	b.Stop()
-
-	if err := ms.Send([]byte("x")); err == nil {
-		t.Fatal("expected error with no healthy stream")
-	}
-	if ms.IsConnected() {
-		t.Fatal("IsConnected should be false when every stream is down")
-	}
-}
-
-// Fan-in: frames from any stream must reach the user's single callback.
 func TestMultiStreamReceiveFanIn(t *testing.T) {
-	a, b := &mockStream{}, &mockStream{}
-	ms := NewMultiStreamTransport([]Transport{a, b})
-	_ = ms.Start()
-	defer ms.Stop()
+	a, b := newAlive(), newAlive()
+	ms := startMS(t, a, b)
 
-	got := make(chan []byte, 4)
-	ms.Receive(func(p []byte) { got <- p })
+	var mu sync.Mutex
+	var got [][]byte
+	ms.Receive(func(data []byte) {
+		mu.Lock()
+		got = append(got, append([]byte(nil), data...))
+		mu.Unlock()
+	})
 	a.inject([]byte("from-a"))
 	b.inject([]byte("from-b"))
 
-	var g1, g2 []byte
-	select {
-	case g1 = <-got:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for first inject")
-	}
-	select {
-	case g2 = <-got:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for second inject")
-	}
-	okOrder1 := bytes.Equal(g1, []byte("from-a")) && bytes.Equal(g2, []byte("from-b"))
-	okOrder2 := bytes.Equal(g1, []byte("from-b")) && bytes.Equal(g2, []byte("from-a"))
-	if !(okOrder1 || okOrder2) {
-		t.Fatalf("unexpected fan-in: %q %q", g1, g2)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 || !bytes.Equal(got[0], []byte("from-a")) || !bytes.Equal(got[1], []byte("from-b")) {
+		t.Fatalf("fan-in got %q", got)
 	}
 }
 
-// Stats must aggregate over inner streams' counters and OR the Connected bit.
 func TestMultiStreamStatsAggregation(t *testing.T) {
-	a, b := &mockStream{}, &mockStream{}
-	// Give the mocks non-zero counters through Stats() by way of the real
-	// interface: our mock's Stats() reports only Connected, so this test is
-	// primarily about the Connected OR.
-	ms := NewMultiStreamTransport([]Transport{a, b})
-	_ = ms.Start()
-	defer ms.Stop()
+	a, b := newAlive(), &mockStream{}
+	older := time.Now().Add(-time.Minute)
+	b.lastRecv.Store(older.UnixNano())
+	ms := startMS(t, a, b)
 
-	if !ms.Stats().Connected {
-		t.Fatal("Stats.Connected should be true when both up")
+	st := ms.Stats()
+	if !st.Connected {
+		t.Error("Connected should be true while one stream is up")
 	}
-	a.Stop()
-	if !ms.Stats().Connected {
-		t.Fatal("Stats.Connected should stay true while ANY stream is up")
+	if !st.LastRecv.Equal(time.Unix(0, a.lastRecv.Load())) {
+		t.Errorf("LastRecv = %v, want the latest stream's", st.LastRecv)
 	}
-	b.Stop()
-	if ms.Stats().Connected {
-		t.Fatal("Stats.Connected should be false when all down")
+	a.connected.Store(false)
+	if ms.Stats().Connected || ms.IsConnected() {
+		t.Error("Connected should be false with every stream down")
 	}
 }
 
-// A stream that comes back after being marked down must resume receiving
-// traffic on the next round-robin tick.
-func TestMultiStreamRecoversAfterFlap(t *testing.T) {
-	a, b := &mockStream{}, &mockStream{}
-	ms := NewMultiStreamTransport([]Transport{a, b})
-	_ = ms.Start()
-	defer ms.Stop()
+// One document failing to start must not take the tunnel down; all of them
+// failing must.
+func TestMultiStreamStartToleratesPartialFailure(t *testing.T) {
+	good, bad := newAlive(), &mockStream{startErr: fmt.Errorf("doc gone")}
+	ms := NewMultiStreamTransport([]Transport{bad, good})
+	if err := ms.Start(); err != nil {
+		t.Fatalf("Start with one good stream: %v", err)
+	}
+	if err := ms.Send(tcpPacket(clientIP, serverIP, 1, 2, 0)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	ms.Stop()
 
-	// First: both up, 10 packets, roughly even.
-	for i := 0; i < 10; i++ {
-		_ = ms.Send([]byte{1})
+	b1, b2 := &mockStream{startErr: fmt.Errorf("x")}, &mockStream{startErr: fmt.Errorf("y")}
+	ms = NewMultiStreamTransport([]Transport{b1, b2})
+	if err := ms.Start(); err == nil {
+		t.Fatal("Start succeeded with no stream started")
 	}
-	beforeA, beforeB := a.sentCount(), b.sentCount()
-	if beforeA == 0 || beforeB == 0 {
-		t.Fatalf("initial distribution missed a stream: a=%d b=%d", beforeA, beforeB)
-	}
+}
 
-	// a dies; next 10 all go to b.
-	a.Stop()
-	for i := 0; i < 10; i++ {
-		_ = ms.Send([]byte{2})
+func TestMultiStreamStopStopsEveryStream(t *testing.T) {
+	a, b := newAlive(), newAlive()
+	ms := startMS(t, a, b)
+	if err := ms.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
-	if a.sentCount() != beforeA {
-		t.Fatal("dead a should not have received traffic")
+	if !a.stopped.Load() || !b.stopped.Load() {
+		t.Fatal("Stop did not stop every inner stream")
 	}
-	if b.sentCount()-beforeB != 10 {
-		t.Fatalf("live b should have absorbed all 10 while a was down, got %d", b.sentCount()-beforeB)
-	}
-
-	// a recovers; next 10 split roughly evenly again.
-	a.Start()
-	beforeA2 := a.sentCount()
-	for i := 0; i < 10; i++ {
-		_ = ms.Send([]byte{3})
-	}
-	if a.sentCount()-beforeA2 == 0 {
-		t.Fatal("recovered a should be receiving traffic again")
+	if err := ms.Send(tcpPacket(clientIP, serverIP, 1, 2, 0)); err == nil {
+		t.Fatal("Send succeeded after Stop")
 	}
 }
