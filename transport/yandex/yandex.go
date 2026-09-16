@@ -294,9 +294,6 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		}
 		messagePart, _ := json.Marshal([]interface{}{"message", authData})
 		session.safeWrite(websocket.TextMessage, []byte(fmt.Sprintf("42%s", string(messagePart))))
-		// Let a peer already in the document hear us now rather than at our
-		// next keepalive tick.
-		session.safeWrite(websocket.TextMessage, []byte(keepAliveFrame))
 
 		connectedAt := time.Now()
 		for t.IsRunning() {
@@ -430,9 +427,9 @@ func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 
 	// The server says why it is about to drop us, e.g.
 	// {"type":"disconnectReason","code":4007,"description":"drop"}. 4007 is
-	// routine (the server sends it to a participant when another one leaves
-	// the document) and the document takes a reconnect right away, so it gets
-	// no special backoff; the log is for diagnosis.
+	// not a ban: on live documents it arrived when another participant left,
+	// and the document accepted new sessions right away. So it gets no special
+	// backoff; the log is for diagnosis.
 	if strings.Contains(text, `"disconnectReason"`) {
 		utils.Debugf("[YDOCS] server disconnect: %s", text)
 		return

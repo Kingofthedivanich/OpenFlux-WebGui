@@ -269,9 +269,10 @@ func TestYandexDocsTransportForgetsPeerWhenAlone(t *testing.T) {
 	waitFor(t, "peer forgotten on empty list", 2*time.Second, func() bool { return !heard() })
 }
 
-// The peer hears us as soon as we join, and again whenever a participant list
-// shows someone else (a peer that just joined), without waiting for the
-// keepalive tick.
+// Whenever a participant list shows someone else (our auth reply with the peer
+// already in the document, or a peer that just joined), the peer hears us
+// without waiting for the keepalive tick. Nothing is sent before the server
+// answers our auth.
 func TestYandexDocsTransportGreetsPeer(t *testing.T) {
 	srv := newFakeDocServer(t)
 	tr := newTestTransport(srv.pageURL)
@@ -282,10 +283,16 @@ func TestYandexDocsTransportGreetsPeer(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tr.Stop()
-	waitFor(t, "keepalive on join", 5*time.Second, func() bool { return srv.countReceived("---KA---") == 1 })
+	waitFor(t, "connect", 5*time.Second, func() bool { return tr.IsConnected() && srv.connCount() == 1 })
+	time.Sleep(100 * time.Millisecond)
+	if n := srv.countReceived("---KA---"); n != 0 {
+		t.Fatalf("keepalive sent before the auth reply (%d)", n)
+	}
 
 	srv.push(t, `40{"sid":"me"}`)
-	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"},{"connectionId":"peer"}]}]`)
+	srv.push(t, `42["message",{"type":"auth","sessionId":"me","participants":[{"connectionId":"me"},{"connectionId":"peer"}]}]`)
+	waitFor(t, "keepalive for peer in auth reply", 2*time.Second, func() bool { return srv.countReceived("---KA---") == 1 })
+	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"},{"connectionId":"peer2"}]}]`)
 	waitFor(t, "keepalive for new participant", 2*time.Second, func() bool { return srv.countReceived("---KA---") == 2 })
 
 	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"}]}]`)
