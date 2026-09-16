@@ -134,6 +134,22 @@ func TestBatchedTransportCoalescesBurstIntoOneMessage(t *testing.T) {
 // Before this fix, flushLoop discarded the error from every
 // b.Transport.Send(encodeBatch(batch)) call: a transport hiccup mid-flush
 // silently dropped the whole batch with no counter and no log line.
+func BenchmarkBatchedTransportSend(b *testing.B) {
+	inner := &fakeTransport{}
+	bt := NewBatchedTransport(inner)
+	if err := bt.Start(); err != nil {
+		b.Fatalf("start: %v", err)
+	}
+	defer bt.Stop()
+
+	pkt := bytes.Repeat([]byte{0xAB}, 800)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bt.Send(pkt)
+	}
+}
+
 func TestBatchedTransportRecordsSendErrors(t *testing.T) {
 	inner := &fakeTransport{sendErr: fmt.Errorf("write: connection reset")}
 	bt := NewBatchedTransport(inner)
@@ -150,5 +166,63 @@ func TestBatchedTransportRecordsSendErrors(t *testing.T) {
 	bt.sendBatch([][]byte{[]byte("also lost")})
 	if got := bt.SendErrors(); got != 2 {
 		t.Fatalf("SendErrors() = %d after two failures, want 2", got)
+	}
+}
+
+// Send's per-packet copy buffer comes from packetBufPool and sendBatch
+// returns it to the pool right after flushing. Push many distinct,
+// differently-sized packets through the real Send -> flushLoop -> sendBatch
+// path (so the pool actually churns) and check every one arrives intact --
+// this is what would catch a buffer recycled (and overwritten by a later
+// Send) before its batch was actually flushed.
+func TestBatchedTransportPoolReuseDoesNotCorruptData(t *testing.T) {
+	inner := &fakeTransport{loopback: true}
+	bt := NewBatchedTransport(inner)
+	bt.lingerMs = 1
+	if err := bt.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer bt.Stop()
+
+	const n = 300
+	want := make([][]byte, n)
+	for i := range want {
+		want[i] = bytes.Repeat([]byte{byte(i), byte(i >> 8)}, 5+i%200)
+	}
+
+	var mu sync.Mutex
+	got := make([][]byte, 0, n)
+	bt.Receive(func(p []byte) {
+		mu.Lock()
+		got = append(got, append([]byte(nil), p...))
+		mu.Unlock()
+	})
+
+	for _, p := range want {
+		if err := bt.Send(p); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		count := len(got)
+		mu.Unlock()
+		if count >= n {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only received %d/%d packets", count, n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("packet %d corrupted (pool reuse bug): got %d bytes, want %d bytes", i, len(got[i]), len(want[i]))
+		}
 	}
 }

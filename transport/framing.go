@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -23,6 +24,20 @@ var (
 	zstdEnc *zstd.Encoder
 	zstdDec *zstd.Decoder
 )
+
+// scratchPool holds reusable byte-slice scratch buffers for the frame/
+// compress/decompress steps below. Every one of these buffers is fully
+// copied into its caller's own (separately allocated) return value before
+// the function that borrowed it returns, so it's always safe to recycle at
+// that point -- this only cuts the number of fresh heap allocations on the
+// hottest path in the tunnel (every batch, both directions), not any
+// lifetime.
+var scratchPool = sync.Pool{
+	New: func() any { return make([]byte, 0, 4096) },
+}
+
+func getScratch() []byte  { return scratchPool.Get().([]byte)[:0] }
+func putScratch(b []byte) { scratchPool.Put(b[:0]) }
 
 func init() {
 	var err error
@@ -47,27 +62,26 @@ func init() {
 	}
 }
 
-// frameBatch concatenates packets into length-prefixed records.
-func frameBatch(pkts [][]byte) []byte {
-	total := 0
-	for _, p := range pkts {
-		total += 2 + len(p)
-	}
-	out := make([]byte, 0, total)
+// frameBatch concatenates packets into length-prefixed records, appending
+// onto dst (typically a pooled scratch buffer; pass nil for a fresh one).
+func frameBatch(pkts [][]byte, dst []byte) []byte {
 	var lenbuf [2]byte
 	for _, p := range pkts {
 		binary.BigEndian.PutUint16(lenbuf[:], uint16(len(p)))
-		out = append(out, lenbuf[:]...)
-		out = append(out, p...)
+		dst = append(dst, lenbuf[:]...)
+		dst = append(dst, p...)
 	}
-	return out
+	return dst
 }
 
 // encodeBatch serializes packets into a single wire frame, compressing the
 // whole batch with zstd only when that actually shrinks it.
 func encodeBatch(pkts [][]byte) []byte {
-	framed := frameBatch(pkts)
-	compressed := zstdEnc.EncodeAll(framed, nil)
+	framed := frameBatch(pkts, getScratch())
+	defer putScratch(framed)
+
+	compressed := zstdEnc.EncodeAll(framed, getScratch())
+	defer putScratch(compressed)
 
 	if len(compressed) < len(framed) {
 		out := make([]byte, 2, 2+len(compressed))
@@ -94,11 +108,14 @@ func decodeBatch(data []byte) ([][]byte, error) {
 
 	framed := payload
 	if flags&batchFlagZstd != 0 {
+		buf := getScratch()
 		var err error
-		framed, err = zstdDec.DecodeAll(payload, nil)
+		framed, err = zstdDec.DecodeAll(payload, buf)
 		if err != nil {
+			putScratch(buf)
 			return nil, fmt.Errorf("zstd decode: %w", err)
 		}
+		defer putScratch(framed)
 	}
 
 	var pkts [][]byte
