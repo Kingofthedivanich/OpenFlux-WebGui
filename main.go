@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"runtime"
 	godebug "runtime/debug"
@@ -11,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"openflux/exitmgr"
+	"openflux/panel"
 	"openflux/socks5"
 	"openflux/transport"
 	"openflux/transport/cupsonline"
@@ -69,6 +73,7 @@ func expandShortFlags(args []string) []string {
 const (
 	roleClient    = "client"
 	roleExit      = "exit"
+	roleExitPanel = "exit-panel"
 	roleBenchSend = "bench-send"
 	roleBenchSink = "bench-sink"
 )
@@ -102,6 +107,11 @@ func main() {
 	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
 	flag.StringVar(&localIP, "local-ip", "", "Egress IP for exit node (l3 mode only, scoped RST drop)")
 
+	panelAddr := flag.String("panel-addr", "127.0.0.1:8088", "--role=exit-panel: bind address for the admin panel")
+	panelUser := flag.String("panel-user", "", "--role=exit-panel: admin panel login username (required)")
+	panelPass := flag.String("panel-pass", "", "--role=exit-panel: admin panel login password (required)")
+	panelData := flag.String("panel-data", "openflux-clients.json", "--role=exit-panel: where registered clients are persisted")
+
 	benchBytes := flag.Int("bench-bytes", 0, "Benchmark: push this many MB through the transport, then report and exit")
 	benchCompressible := flag.Bool("bench-compressible", false, "Benchmark: use compressible payload instead of random")
 
@@ -128,6 +138,7 @@ USAGE
 ROLE
   -r, --role=client       Run as client. (default)
   -r, --role=exit         Run as exit node.
+  -r, --role=exit-panel   Run a multi-client exit node with a local web admin panel.
   -r, --role=bench-send   Benchmark: push --bench-bytes MB.
   -r, --role=bench-sink   Benchmark: receive from transport.
 
@@ -151,6 +162,12 @@ MODE  (only with --role=exit)
   -m, --mode=l3                Packet forwarding (SNAT/DNAT). Default.
   -m, --mode=l4                Stream proxy (TCP termination + re-dial).
   -l, --local-ip=<ip>          Egress IP for SNAT. Auto-detected.
+
+ADMIN PANEL  (only with --role=exit-panel; always l4, one tunnel per client)
+      --panel-addr=<host:port> Bind address. Default 127.0.0.1:8088.
+      --panel-user=<user>      Login username (required).
+      --panel-pass=<pass>      Login password (required).
+      --panel-data=<path>      Where registered clients are persisted (JSON).
 
 TRANSPORT MODIFIERS
   -c, --codec=batched          zstd + coalescing. Default.
@@ -242,10 +259,14 @@ DEPRECATED (removed in v2)
 		if *mode != "l3" && *mode != "l4" {
 			log.Fatalf("--role=exit: unknown --mode=%q (want l3|l4)", *mode)
 		}
+	case roleExitPanel:
+		if *panelUser == "" || *panelPass == "" {
+			log.Fatalf("--role=exit-panel requires --panel-user and --panel-pass")
+		}
 	case roleBenchSend, roleBenchSink:
 		// No ingress or exit mode.
 	default:
-		log.Fatalf("unknown --role=%q (want client|exit|bench-send|bench-sink)", *role)
+		log.Fatalf("unknown --role=%q (want client|exit|exit-panel|bench-send|bench-sink)", *role)
 	}
 
 	// Warn when the exit runs on l4 (gVisor): it works everywhere but is
@@ -264,12 +285,17 @@ DEPRECATED (removed in v2)
 
 	// The exit node often runs on a tiny VPS; keep the heap tight under load
 	// (GC aggressively). Set GOMEMLIMIT in the environment for a hard soft-cap.
-	if *role == roleExit {
+	if *role == roleExit || *role == roleExitPanel {
 		godebug.SetGCPercent(20)
 	}
 
 	if *debug {
 		utils.EnableDebug()
+	}
+
+	if *role == roleExitPanel {
+		runExitPanel(*panelAddr, *panelUser, *panelPass, *panelData)
+		return
 	}
 
 	log.Printf("=== Universal Bypass Tool ===")
@@ -395,6 +421,45 @@ func runExit(trans transport.Transport, exitMode tunnel.ExitMode) {
 	if err := ex.Stop(); err != nil {
 		log.Printf("exit stop: %v", err)
 	}
+	log.Printf("Shutdown complete")
+}
+
+// runExitPanel serves a multi-client exit node: every registered client
+// gets its own transport and its own independent L4 tunnel (see
+// exitmgr.Manager), managed live through a local, login-gated web panel
+// instead of one client per CLI invocation.
+func runExitPanel(addr, user, pass, dataPath string) {
+	store := exitmgr.NewStore(dataPath)
+	mgr := exitmgr.NewManager(store)
+	if err := mgr.LoadPersisted(); err != nil {
+		log.Fatalf("panel: load persisted clients: %v", err)
+	}
+
+	srv := panel.NewServer(mgr, user, pass)
+	httpSrv := &http.Server{Addr: addr, Handler: srv}
+
+	log.Printf("Running as EXIT NODE PANEL (l4, multi-client)")
+	log.Printf("Admin panel: http://%s (login required)", addr)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpSrv.ListenAndServe() }()
+
+	sigCh := make(chan os.Signal, 1)
+	notifySignals(sigCh)
+
+	select {
+	case err := <-errCh:
+		log.Fatalf("panel: %v", err)
+	case <-sigCh:
+	}
+
+	log.Printf("Shutting down panel...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Printf("panel http shutdown: %v", err)
+	}
+	mgr.Shutdown()
 	log.Printf("Shutdown complete")
 }
 

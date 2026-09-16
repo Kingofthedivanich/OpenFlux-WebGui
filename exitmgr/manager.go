@@ -1,0 +1,243 @@
+package exitmgr
+
+import (
+	"fmt"
+	"sync"
+	"time"
+
+	"openflux/transport"
+	"openflux/tunnel"
+)
+
+// ClientStatus is a point-in-time snapshot of one client's state, safe to
+// serialize and hand back over the panel's HTTP API.
+type ClientStatus struct {
+	Config    ClientConfig  `json:"config"`
+	Status    string        `json:"status"` // "running" | "error"
+	Error     string        `json:"error,omitempty"`
+	StartedAt time.Time     `json:"started_at,omitempty"`
+	Stats     *tunnel.Stats `json:"stats,omitempty"`
+}
+
+type runningClient struct {
+	cfg       ClientConfig
+	trans     transport.Transport
+	tun       *tunnel.TCPTunnel
+	status    string
+	lastErr   error
+	startedAt time.Time
+}
+
+// Manager owns a set of concurrently running exit-node clients, each with
+// its own transport and its own independent L4 tunnel (each gets its own
+// gVisor stack instance, so clients never share network-stack state).
+type Manager struct {
+	mu      sync.RWMutex
+	clients map[string]*runningClient
+	base    transport.TransportConfig
+	store   *Store
+
+	// buildTransport constructs a client's transport stack. Overridable
+	// (see NewManagerWithBuilder) so tests can exercise Manager's lifecycle
+	// and concurrency logic with an in-memory stub instead of a real
+	// network transport. The L4 tunnel itself (tunnel.NewTCPTunnelMode) is
+	// always the real thing -- it only sets up an in-memory gVisor stack,
+	// no network I/O, so it's already safe to use with a stub transport.
+	buildTransport func(ClientConfig, transport.TransportConfig) (transport.Transport, error)
+}
+
+// NewManager creates an empty Manager. store may be nil to disable
+// persistence (clients then only live for the process's lifetime).
+func NewManager(store *Store) *Manager {
+	return NewManagerWithBuilder(store, BuildTransport)
+}
+
+// NewManagerWithBuilder is NewManager with transport construction injected,
+// for tests.
+func NewManagerWithBuilder(
+	store *Store,
+	buildTransport func(ClientConfig, transport.TransportConfig) (transport.Transport, error),
+) *Manager {
+	return &Manager{
+		clients:        make(map[string]*runningClient),
+		base:           transport.DefaultConfig(),
+		store:          store,
+		buildTransport: buildTransport,
+	}
+}
+
+// LoadPersisted starts every client found in the Manager's store, if one is
+// configured. Errors starting an individual client are recorded on that
+// client's status rather than aborting the rest.
+func (m *Manager) LoadPersisted() error {
+	if m.store == nil {
+		return nil
+	}
+	cfgs, err := m.store.Load()
+	if err != nil {
+		return fmt.Errorf("load persisted clients: %w", err)
+	}
+	for _, cfg := range cfgs {
+		if err := m.start(cfg); err != nil {
+			// Keep it registered (as errored) rather than silently dropping
+			// it, so the operator sees it in the panel and can fix/retry.
+			m.mu.Lock()
+			m.clients[cfg.ID] = &runningClient{cfg: cfg, status: "error", lastErr: err}
+			m.mu.Unlock()
+		}
+	}
+	return nil
+}
+
+// AddClient validates cfg, starts its transport and tunnel, and persists it
+// (if a store is configured) so it survives a process restart.
+func (m *Manager) AddClient(cfg ClientConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	_, exists := m.clients[cfg.ID]
+	m.mu.RUnlock()
+	if exists {
+		return fmt.Errorf("client %q already exists", cfg.ID)
+	}
+
+	startErr := m.start(cfg)
+	if startErr != nil {
+		m.mu.Lock()
+		m.clients[cfg.ID] = &runningClient{cfg: cfg, status: "error", lastErr: startErr}
+		m.mu.Unlock()
+	}
+
+	if m.store != nil {
+		if err := m.store.Save(m.configs()); err != nil {
+			return fmt.Errorf("client registered but failed to persist: %w", err)
+		}
+	}
+	return startErr
+}
+
+// start builds the transport + tunnel for cfg and, on success, registers
+// the running client. It does not touch persistence.
+func (m *Manager) start(cfg ClientConfig) error {
+	trans, err := m.buildTransport(cfg, m.base)
+	if err != nil {
+		return fmt.Errorf("build transport: %w", err)
+	}
+	if err := trans.Start(); err != nil {
+		return fmt.Errorf("start transport: %w", err)
+	}
+	tun, err := tunnel.NewTCPTunnelMode(trans, true, tunnel.ExitModeL4)
+	if err != nil {
+		trans.Stop()
+		return fmt.Errorf("start tunnel: %w", err)
+	}
+
+	m.mu.Lock()
+	m.clients[cfg.ID] = &runningClient{
+		cfg:       cfg,
+		trans:     trans,
+		tun:       tun,
+		status:    "running",
+		startedAt: time.Now(),
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+// RemoveClient stops and unregisters a client, and removes it from
+// persistence so it doesn't come back on the next restart.
+func (m *Manager) RemoveClient(id string) error {
+	m.mu.Lock()
+	rc, ok := m.clients[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("client %q not found", id)
+	}
+	delete(m.clients, id)
+	m.mu.Unlock()
+
+	if rc.tun != nil {
+		rc.tun.Close()
+	}
+	if rc.trans != nil {
+		rc.trans.Stop()
+	}
+
+	if m.store != nil {
+		if err := m.store.Save(m.configs()); err != nil {
+			return fmt.Errorf("client removed but failed to persist: %w", err)
+		}
+	}
+	return nil
+}
+
+// List returns every registered client's current status, sorted by ID for
+// stable output.
+func (m *Manager) List() []ClientStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	out := make([]ClientStatus, 0, len(m.clients))
+	for _, rc := range m.clients {
+		out = append(out, statusOf(rc))
+	}
+	return out
+}
+
+// Get returns one client's current status.
+func (m *Manager) Get(id string) (ClientStatus, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rc, ok := m.clients[id]
+	if !ok {
+		return ClientStatus{}, false
+	}
+	return statusOf(rc), true
+}
+
+func statusOf(rc *runningClient) ClientStatus {
+	s := ClientStatus{
+		Config:    rc.cfg,
+		Status:    rc.status,
+		StartedAt: rc.startedAt,
+	}
+	if rc.lastErr != nil {
+		s.Error = rc.lastErr.Error()
+	}
+	if rc.tun != nil {
+		stats := rc.tun.StatsSnapshot()
+		s.Stats = &stats
+	}
+	return s
+}
+
+// configs returns the persisted-config view of every registered client
+// (including ones currently in an error state, so a fixable misconfig
+// isn't silently dropped from the saved set). Caller must not hold m.mu.
+func (m *Manager) configs() []ClientConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]ClientConfig, 0, len(m.clients))
+	for _, rc := range m.clients {
+		out = append(out, rc.cfg)
+	}
+	return out
+}
+
+// Shutdown stops every running client. Intended for process shutdown.
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	clients := m.clients
+	m.clients = make(map[string]*runningClient)
+	m.mu.Unlock()
+
+	for _, rc := range clients {
+		if rc.tun != nil {
+			rc.tun.Close()
+		}
+		if rc.trans != nil {
+			rc.trans.Stop()
+		}
+	}
+}

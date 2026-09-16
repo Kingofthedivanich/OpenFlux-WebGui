@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -57,6 +58,9 @@ type TCPTunnel struct {
 	exitMode    ExitMode
 	startTime   time.Time
 	packetCount atomic.Uint64
+
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // TCP buffer size range for gvisor stacks.
@@ -88,6 +92,7 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 		isExitNode: isExitNode,
 		exitMode:   mode,
 		startTime:  time.Now(),
+		done:       make(chan struct{}),
 	}
 
 	utils.Debugf("[TUNNEL] Net stack init...")
@@ -237,16 +242,51 @@ func (t *TCPTunnel) printStats() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		stats := t.gvisorStack.Stats()
-		utils.Debugf("[STATS] uptime=%v mode=%s packets=%d connected=%d established=%d retrans=%d",
-			time.Since(t.startTime).Round(time.Second),
-			t.exitMode.String(),
-			t.packetCount.Load(),
-			stats.TCP.CurrentConnected.Value(),
-			stats.TCP.CurrentEstablished.Value(),
-			stats.TCP.Retransmits.Value(),
-		)
+	for {
+		select {
+		case <-t.done:
+			return
+		case <-ticker.C:
+			stats := t.gvisorStack.Stats()
+			utils.Debugf("[STATS] uptime=%v mode=%s packets=%d connected=%d established=%d retrans=%d",
+				time.Since(t.startTime).Round(time.Second),
+				t.exitMode.String(),
+				t.packetCount.Load(),
+				stats.TCP.CurrentConnected.Value(),
+				stats.TCP.CurrentEstablished.Value(),
+				stats.TCP.Retransmits.Value(),
+			)
+		}
+	}
+}
+
+// Close stops the stats loop and tears down the gVisor stack. It does not
+// touch the underlying transport; callers that own the transport (e.g.
+// exitmgr.Manager) are responsible for stopping that separately.
+func (t *TCPTunnel) Close() error {
+	t.closeOnce.Do(func() {
+		close(t.done)
+		t.gvisorStack.Close()
+	})
+	return nil
+}
+
+// Stats returns a snapshot of this tunnel's current counters, for exitmgr's
+// per-client status reporting.
+type Stats struct {
+	UptimeSeconds int64
+	Connected     uint64
+	Established   uint64
+	Retransmits   uint64
+}
+
+func (t *TCPTunnel) StatsSnapshot() Stats {
+	s := t.gvisorStack.Stats()
+	return Stats{
+		UptimeSeconds: int64(time.Since(t.startTime).Seconds()),
+		Connected:     s.TCP.CurrentConnected.Value(),
+		Established:   s.TCP.CurrentEstablished.Value(),
+		Retransmits:   s.TCP.Retransmits.Value(),
 	}
 }
 
