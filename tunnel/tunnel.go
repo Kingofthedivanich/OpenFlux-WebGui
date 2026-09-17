@@ -21,6 +21,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
+	"openflux/netguard"
 	"openflux/transport"
 	"openflux/utils"
 )
@@ -217,7 +218,13 @@ func (t *TCPTunnel) setupExitNodeProxy(tunnelNIC tcpip.NICID) {
 
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	reqID := r.ID()
-	dest := net.JoinHostPort(reqID.LocalAddress.String(), strconv.Itoa(int(reqID.LocalPort)))
+	dstIP := net.IP(reqID.LocalAddress.AsSlice())
+	if netguard.Blocked(dstIP) {
+		utils.Debugf("[EXIT] refused blocked destination %s (use --allow-private to permit)", dstIP)
+		r.Complete(true)
+		return
+	}
+	dest := net.JoinHostPort(dstIP.String(), strconv.Itoa(int(reqID.LocalPort)))
 
 	utils.SafeGo("exit.flow", func() {
 		dialer := t.dialer

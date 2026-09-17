@@ -17,6 +17,7 @@ import (
 	"openflux/transport/mailru"
 	"openflux/transport/oneme"
 	"openflux/transport/yandex"
+	"openflux/netguard"
 	"openflux/tunnel"
 	"openflux/tunnel/l3"
 	"openflux/utils"
@@ -99,6 +100,8 @@ func main() {
 		"Client: the exit node's public key (from its startup banner). Turns the encrypted transport on")
 	allowPlaintext := flag.Bool("allow-plaintext", false,
 		"Run without encryption. UNSAFE: anyone with access to the document can read the traffic and use the exit node")
+	allowPrivate := flag.Bool("allow-private", false,
+		"Exit: allow reaching private/loopback/link-local networks and cloud metadata (169.254.169.254). Off by default")
 	pskFile := flag.String("psk-file", "",
 		"Optional, both peers: file with a shared secret (16+ characters). The exit node then refuses clients without it")
 
@@ -181,6 +184,8 @@ ENCRYPTION  (Noise NKpsk0: X25519 + AES-256-GCM, session keys rotate every 2 min
                                refuses clients that do not have it.
       --allow-plaintext        Run without encryption (unsafe; encryption is required
                                otherwise).
+      --allow-private          Exit: permit private/loopback/link-local and cloud-metadata
+                               destinations (blocked by default).
 
 BENCHMARK  (only with --role=bench-*)
       --bench-bytes=<MB>       MB to push (bench-send).
@@ -303,6 +308,11 @@ DEPRECATED (removed in v2)
 	// slower than l3 (SNAT/DNAT, Linux only, needs root + iptables).
 	if *role == roleExit && *mode == "l4" {
 		log.Printf("warning: exit on l4 (gVisor). l3 is faster on Linux with root.")
+	}
+
+	netguard.SetAllowPrivate(*allowPrivate)
+	if *allowPrivate && *role == roleExit {
+		log.Printf("WARNING: --allow-private: the exit node may reach private networks and cloud metadata")
 	}
 
 	exitMode, err := tunnel.ParseExitMode(*mode)
