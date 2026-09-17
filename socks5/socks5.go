@@ -93,6 +93,10 @@ func sendReply(conn net.Conn, rep byte) {
 	conn.Write([]byte{0x05, rep, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 }
 
+// halfCloseLinger bounds the direction that is still open after the other
+// one ended; without it a peer that never sends FIN keeps the flow forever.
+const halfCloseLinger = 120 * time.Second
+
 // closeWrite half-closes the send side of c if it supports it (TCP and gVisor
 // conns do), otherwise closes it fully.
 func closeWrite(c net.Conn) {
@@ -188,6 +192,10 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 
 	utils.Debugf("[SOCKS5] CONNECT %s", targetAddr)
 
+	// Handshake parsed; the tunnel dial can legitimately take longer than the
+	// handshake deadline over a slow document relay, so lift it here.
+	clientConn.SetDeadline(time.Time{})
+
 	targetConn, err := s.dialer.DialTCP(targetAddr)
 	if err != nil {
 		utils.Debugf("[SOCKS5] Dial failed: %v", err)
@@ -199,8 +207,6 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	if _, err := clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}); err != nil {
 		return
 	}
-	// Handshake done; the data phase has no deadline of its own.
-	clientConn.SetDeadline(time.Time{})
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -212,12 +218,14 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 		defer wg.Done()
 		io.Copy(targetConn, clientConn)
 		closeWrite(targetConn)
+		targetConn.SetReadDeadline(time.Now().Add(halfCloseLinger))
 	}()
 
 	go func() {
 		defer wg.Done()
 		io.Copy(clientConn, targetConn)
 		closeWrite(clientConn)
+		clientConn.SetReadDeadline(time.Now().Add(halfCloseLinger))
 	}()
 
 	wg.Wait()

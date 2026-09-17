@@ -122,7 +122,7 @@ func (b *BatchedTransport) Send(data []byte) error {
 	if !b.running.Load() {
 		return fmt.Errorf("batched transport stopped")
 	}
-	if len(data) == 0 || len(data) > maxPacketSize {
+	if len(data) == 0 || len(data) > maxFrameBytes-4 {
 		return fmt.Errorf("packet size %d out of range", len(data))
 	}
 	p := make([]byte, len(data))
@@ -169,6 +169,9 @@ func (b *BatchedTransport) flushLoop() {
 		}
 		batch := [][]byte{first}
 		size := 2 + len(first)
+		// fits reports whether p can join the batch without exceeding the
+		// frame cap the transports enforce.
+		fits := func(p []byte) bool { return size+2+len(p)+2 <= maxFrameBytes }
 
 		// Phase 1: absorb everything already queued (burst coalescing). This
 		// alone collapses a window's worth of segments into one message.
@@ -179,6 +182,11 @@ func (b *BatchedTransport) flushLoop() {
 				if !ok {
 					b.sendBatch(batch)
 					return
+				}
+				if !fits(p) {
+					b.sendBatch(batch)
+					batch, size = [][]byte{p}, 2+len(p)
+					continue
 				}
 				batch = append(batch, p)
 				size += 2 + len(p)
@@ -200,6 +208,11 @@ func (b *BatchedTransport) flushLoop() {
 						timer.Stop()
 						b.sendBatch(batch)
 						return
+					}
+					if !fits(p) {
+						b.sendBatch(batch)
+						batch, size = [][]byte{p}, 2+len(p)
+						continue
 					}
 					batch = append(batch, p)
 					size += 2 + len(p)

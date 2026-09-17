@@ -82,6 +82,11 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 	}
 	pkt = sl
 
+	if isFragmented(pkt) {
+		t.dropFrag.Add(1)
+		return
+	}
+
 	// A client-originated RST must reach the real destination like any other
 	// packet (dropping it here left the real server's connection half-open);
 	// isTCPClosing below already recognizes RST and marks the conntrack
@@ -159,7 +164,7 @@ func (t *L3Exit) handleFromInternet(pkt []byte) {
 		}
 		return
 	}
-	t.ct.Touch(rk, isTCPClosing(pkt))
+	t.ct.TouchReplied(rk, isTCPClosing(pkt))
 	rewriteDNAT(pkt, clientIPBytes)
 	fixChecksums(pkt)
 

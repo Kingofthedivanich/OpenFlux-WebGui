@@ -76,7 +76,7 @@ func DefaultCupsonlineConfig() CupsonlineConfig {
 
 		// gorilla allocates these per connection; 128 KB is plenty for a
 		// ~43 KB base64 batch and avoids ~256 MB of buffers across rooms.
-		ReadBufferSize:  128 << 10,
+		ReadBufferSize:  256 << 10, // also the read limit: a 32K+64K batch is ~131K base64
 		WriteBufferSize: 128 << 10,
 
 		MaxPayloadBytes: 65535, // one codec frame; the 2-byte prefix cannot say more

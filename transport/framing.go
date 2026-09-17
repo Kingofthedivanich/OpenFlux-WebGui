@@ -21,6 +21,12 @@ const (
 	// maxPacketSize is the largest record a batch may carry: an IPv4 packet
 	// cannot be longer, and the 2-byte length prefix cannot say more.
 	maxPacketSize = 0xFFFF
+	// maxFrameBytes caps one encoded batch frame. The document transports
+	// prefix each frame with a 2-byte length and cap it at 65535, and the
+	// encrypted layer adds encryptedOverhead below the codec, so the batch
+	// itself must stay under 65535 - overhead.
+	encryptedOverhead = 64
+	maxFrameBytes     = 0xFFFF - encryptedOverhead
 	// maxBatchRecords and maxBatchDecoded bound what one frame from the
 	// shared document can make us allocate. Senders stay far below both
 	// (64 packets / 8 KB by default).

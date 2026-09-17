@@ -215,6 +215,12 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		}
 
 		t.Mu.Lock()
+		if !t.IsRunning() {
+			// Stop ran while we were dialing and could not see this conn.
+			t.Mu.Unlock()
+			conn.Close()
+			return
+		}
 		t.session = session
 		t.SetConnected(true)
 		t.Mu.Unlock()

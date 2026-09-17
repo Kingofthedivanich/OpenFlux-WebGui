@@ -49,12 +49,19 @@ services:
       LOCAL_IP: ${EXIT_LOCAL_IP:-}
       MODE: ${MODE:-l3}
       CODEC: ${CODEC:-batched}
-      EXIT_KEY_FILE: ${EXIT_KEY_FILE:-}
+      EXIT_KEY_FILE: ${EXIT_KEY_FILE:-/keys/exit.key}
       PSK_FILE: ${PSK_FILE:-}
       UPSTREAM_PROXY: ${UPSTREAM_PROXY:-}
       ALLOW_PLAINTEXT: ${ALLOW_PLAINTEXT:-0}
       ALLOW_PRIVATE: ${ALLOW_PRIVATE:-0}
       DEBUG: ${DEBUG:-0}
+    # The exit's static key must survive rebuilds, or every client's PEER_KEY
+    # goes stale after `up --build`.
+    volumes:
+      - exit-key:/keys
     cap_add:
       - NET_RAW
       - NET_ADMIN
+
+volumes:
+  exit-key:
