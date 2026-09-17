@@ -93,6 +93,16 @@ func sendReply(conn net.Conn, rep byte) {
 	conn.Write([]byte{0x05, rep, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 }
 
+// closeWrite half-closes the send side of c if it supports it (TCP and gVisor
+// conns do), otherwise closes it fully.
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	c.Close()
+}
+
 func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	// A malformed request must never crash the host process; contain any
 	// panic to this connection.
@@ -195,16 +205,19 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Half-close each direction independently: an EOF one way must not abort
+	// data still flowing the other way (e.g. an HTTP request body after the
+	// response headers).
 	go func() {
 		defer wg.Done()
-		defer targetConn.Close()
 		io.Copy(targetConn, clientConn)
+		closeWrite(targetConn)
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer clientConn.Close()
 		io.Copy(clientConn, targetConn)
+		closeWrite(clientConn)
 	}()
 
 	wg.Wait()

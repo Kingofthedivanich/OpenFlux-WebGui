@@ -285,9 +285,15 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 
 		go func() {
 			defer wg.Done()
-			defer local.Close()
 			buf := make([]byte, 256*1024)
 			_, _ = io.CopyBuffer(local, remote, buf)
+			// Half-close: let the local->remote direction keep flowing after
+			// the server stops sending, instead of tearing the flow down.
+			if cw, ok := interface{}(local).(interface{ CloseWrite() error }); ok {
+				_ = cw.CloseWrite()
+			} else {
+				local.Close()
+			}
 		}()
 
 		wg.Wait()
