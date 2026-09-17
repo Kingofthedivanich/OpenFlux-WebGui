@@ -270,6 +270,22 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		}
 		utils.Debugf("[YDOCS] WebSocket connected to %s", info.Host)
 
+		// Wait for the server's engine.io OPEN packet ("0{...sid...}") before
+		// writing anything. Sending socket.io 40/42 right after the upgrade
+		// races the server's own handshake frame; strict balancers then close
+		// the socket with 1005 within ~50-100ms and no frames. Reading OPEN
+		// first makes the handshake deterministic (confirmed live upstream).
+		conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+		if _, first, err := conn.ReadMessage(); err != nil {
+			utils.Debugf("[YDOCS] read engine.io OPEN failed: %v", err)
+			conn.Close()
+			t.scheduleReconnect(attempt)
+			return
+		} else if len(first) == 0 || first[0] != '0' {
+			utils.Debugf("[YDOCS] unexpected first frame (want engine.io OPEN \"0...\"): %q", first)
+		}
+		conn.SetReadDeadline(time.Time{})
+
 		writeQueue := make(chan []byte, t.GetConfig().MaxQueueSize)
 		if existingSession != nil {
 			writeQueue = existingSession.WriteQueue

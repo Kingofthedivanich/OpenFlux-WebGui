@@ -40,6 +40,10 @@ func newFakeDocServer(t *testing.T) *fakeDocServer {
 		f.mu.Lock()
 		f.conns = append(f.conns, conn)
 		f.mu.Unlock()
+		// Real servers send the engine.io OPEN frame first; the transport now
+		// waits for it before authenticating.
+		_ = conn.WriteMessage(websocket.TextMessage,
+			[]byte(`0{"sid":"srv","upgrades":[],"pingInterval":25000,"pingTimeout":20000}`))
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
