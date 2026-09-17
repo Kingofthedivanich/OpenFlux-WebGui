@@ -34,7 +34,7 @@ func (c *MaxClient) Connect() error {
 	}
 	c.conn = conn
 	go c.readLoop()
-	fmt.Println("[MAX] Connected")
+	logInfo("connected")
 	return nil
 }
 
@@ -71,6 +71,10 @@ func (c *MaxClient) invoke(opcode int, payload map[string]interface{}) (*MaxPack
 	c.pending.Store(seq, ch)
 	defer c.pending.Delete(seq)
 	c.mu.Lock()
+	if c.conn == nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("not connected")
+	}
 	err := c.conn.WriteMessage(websocket.TextMessage, data)
 	c.mu.Unlock()
 	if err != nil {
@@ -108,11 +112,7 @@ func (c *MaxClient) LoginByToken(token string) error {
 	c.loggedIn = true
 	go c.keepalive()
 	users := c.getUserMap(resp)
-	fmt.Println("\n=== CONTACTS ===")
-	for id, u := range users {
-		fmt.Printf("  ID: %d | %s %s | Phone: %d\n", id, u.FirstName, u.LastName, u.Phone)
-	}
-	fmt.Println()
+	logDebug("logged in, %d contacts", len(users))
 	return nil
 }
 

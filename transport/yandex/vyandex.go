@@ -57,13 +57,13 @@ func DefaultVolgaConfig() VolgaConfig {
 		RelayTimeout:        30 * time.Second,
 
 		WorkerCount: 2000,
-		QueueSize:   1000000,
+		QueueSize:   4096,
 
 		BatchSize:     20,
 		BatchTimeout:  2 * time.Millisecond,
 		BatchMaxBytes: 4 * 1024 * 1024,
 
-		MaxPayloadBytes: 5_000_000,
+		MaxPayloadBytes: 65535, // one codec frame; the 2-byte length prefix cannot say more
 		MinPayloadBytes: 200,
 
 		ReconnectMinDelay:   500 * time.Millisecond,
@@ -82,7 +82,7 @@ var reClientConfig = regexp.MustCompile(`<script[^>]*id="client-config"[^>]*>(.*
 
 var (
 	b64BufPool = sync.Pool{
-		New: func() interface{} { return make([]byte, 0, 16*1024*1024) },
+		New: func() interface{} { return make([]byte, 0, 256*1024) },
 	}
 	jsonBufPool = sync.Pool{
 		New: func() interface{} { return bytes.NewBuffer(make([]byte, 0, 128*1024)) },
@@ -204,7 +204,7 @@ func authorize(docURL string) (*volgaAuth, error) {
 		if len(preview) > 3000 {
 			preview = preview[:3000]
 		}
-		utils.Debugf("[VOLGA] HTML preview: %s", preview)
+		_ = preview // the page may embed access_token; not logged
 		return nil, fmt.Errorf("client-config not found in %s", finalURL)
 	}
 
@@ -287,7 +287,8 @@ func authorize(docURL string) (*volgaAuth, error) {
 		return nil, fmt.Errorf("auth/initial no Location")
 	}
 
-	utils.Debugf("[VOLGA] Location: %s", location[:minInt(len(location), 300)])
+	// Location carries a Bearer token in its query; do not log it verbatim.
+	utils.Debugf("[VOLGA] Location: %s", maskURLQuery(location))
 
 	if strings.Contains(location, "/document/error/") {
 		return nil, fmt.Errorf("auth/initial returned /document/error/ — check access_token_ttl and Referer")
@@ -342,8 +343,9 @@ func authorize(docURL string) (*volgaAuth, error) {
 			a.Token != "", a.RequestPath != "", a.UserIDStr != "", a.Sign != "")
 	}
 
-	utils.Debugf("[VOLGA] auth OK: user=%d(%s) rp=%s sign=%s ts=%s",
-		a.UserID, a.UserIDStr, a.RequestPath, a.Sign, a.TS)
+	// sign/ts/request-path are session credentials; log only lengths.
+	utils.Debugf("[VOLGA] auth OK: user=%d(%s) rp=%dB sign=%dB ts=%dB",
+		a.UserID, a.UserIDStr, len(a.RequestPath), len(a.Sign), len(a.TS))
 	return a, nil
 }
 
@@ -414,6 +416,18 @@ func mapKeys(m map[string]interface{}) []string {
 	return keys
 }
 
+// maskURLQuery strips the query string (which can carry tokens) from a URL
+// before logging, keeping only scheme+host+path.
+func maskURLQuery(u string) string {
+	if i := strings.IndexByte(u, '?'); i >= 0 {
+		return u[:i] + "?<redacted>"
+	}
+	if len(u) > 120 {
+		return u[:120]
+	}
+	return u
+}
+
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -428,7 +442,6 @@ type relayClient struct {
 
 	httpClient *http.Client
 	workers    int
-	queue      chan []byte
 	batchQueue chan []byte
 	wg         sync.WaitGroup
 	ctx        context.Context
@@ -463,7 +476,6 @@ func newRelayClient(auth *volgaAuth, cfg VolgaConfig, stats *VolgaStats) *relayC
 			Jar:       auth.Session.Jar,
 		},
 		workers:    cfg.WorkerCount,
-		queue:      make(chan []byte, cfg.QueueSize),
 		batchQueue: make(chan []byte, cfg.QueueSize),
 		ctx:        ctx,
 		cancel:     cancel,
@@ -480,9 +492,10 @@ func (r *relayClient) Start() {
 }
 
 func (r *relayClient) Stop() {
+	// Cancel the context and let the workers drain and exit; do NOT close
+	// batchQueue - a concurrent Send would panic on a closed channel. Stop
+	// is safe to call more than once.
 	r.cancel()
-	close(r.queue)
-	close(r.batchQueue)
 	r.wg.Wait()
 }
 
@@ -500,6 +513,8 @@ func (r *relayClient) Send(data []byte) error {
 	select {
 	case r.batchQueue <- cp:
 		return nil
+	case <-r.ctx.Done():
+		return fmt.Errorf("relay stopped")
 	default:
 		r.stats.QueueDrops.Add(1)
 		return fmt.Errorf("queue full")
@@ -730,11 +745,18 @@ func (w *wsListener) run() {
 		default:
 		}
 
+		connStart := time.Now()
 		if err := w.connect(); err != nil {
 			utils.Debugf("[VOLGA] WS error: %v", err)
 		}
 		if w.ctx.Err() != nil {
 			return
+		}
+		// A session that stayed up a while is a healthy reconnect, not a
+		// failing one: reset the backoff so a long-lived link that finally
+		// drops doesn't wait out the full 30s.
+		if time.Since(connStart) > 30*time.Second {
+			delay = w.config.ReconnectMinDelay
 		}
 
 		w.stats.WSReconnects.Add(1)
@@ -898,6 +920,13 @@ func (w *wsListener) handleBundleItem(raw json.RawMessage) {
 		w.stats.PacketsRecv.Add(uint64(len(packets)))
 		w.stats.BytesReceived.Add(uint64(len(decoded)))
 		for _, pkt := range packets {
+			// Drop the relay-level keepalive (a bare {0x00} the peer posts
+			// every KeepAliveInterval to keep the HTTP channel warm); it is
+			// not a tunnel packet and would otherwise reach the codec as an
+			// undecodable 1-byte frame.
+			if len(pkt) <= 1 {
+				continue
+			}
 			if w.onData != nil {
 				w.onData(pkt)
 			}
@@ -1027,6 +1056,7 @@ func (t *YandexVolgaTransport) Stats() transport.TransportStats {
 		Reconnects:    t.stats.WSReconnects.Load(),
 		Connected:     t.IsConnected(),
 		Uptime:        base.Uptime,
+		LastRecv:      base.LastRecv,
 	}
 }
 

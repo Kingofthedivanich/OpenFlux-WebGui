@@ -36,6 +36,9 @@ type BatchedTransport struct {
 	maxBatchCount int
 
 	running atomic.Bool
+	stop    chan struct{}
+	stopMu  sync.Mutex
+	flushWG sync.WaitGroup
 
 	mu     sync.RWMutex
 	userCb func([]byte)
@@ -45,6 +48,8 @@ type BatchedTransport struct {
 	// return value entirely, so a transport hiccup silently dropped
 	// whole batches with no signal anywhere.
 	sendErrors atomic.Uint64
+
+	decodeWarn *rateLog
 }
 
 // SendErrors returns the number of flushed batches lost to a Send error on
@@ -87,9 +92,11 @@ func NewBatchedTransport(inner Transport) *BatchedTransport {
 	return &BatchedTransport{
 		Transport:     inner,
 		queue:         make(chan []byte, batchQueueDepth),
+		stop:          make(chan struct{}),
 		lingerMs:      envInt("OPENFLUX_BATCH_LINGER_MS", defaultLingerMs),
 		maxBatchBytes: envInt("OPENFLUX_BATCH_BYTES", defaultMaxBatchBytes),
 		maxBatchCount: envInt("OPENFLUX_BATCH_COUNT", defaultMaxBatchCount),
+		decodeWarn:    newRateLog(10 * time.Second),
 	}
 }
 
@@ -98,12 +105,27 @@ func (b *BatchedTransport) Start() error {
 		return err
 	}
 	b.running.Store(true)
-	go b.flushLoop()
+	b.flushWG.Add(1)
+	go func() {
+		defer b.flushWG.Done()
+		b.flushLoop()
+	}()
 	return nil
 }
 
+// Stop ends the flush loop and waits for it before stopping the inner
+// transport, so no goroutine outlives the transport. Packets still queued are
+// dropped; the tunnel is going away.
 func (b *BatchedTransport) Stop() error {
 	b.running.Store(false)
+	b.stopMu.Lock()
+	select {
+	case <-b.stop:
+	default:
+		close(b.stop)
+	}
+	b.stopMu.Unlock()
+	b.flushWG.Wait()
 	return b.Transport.Stop()
 }
 
@@ -111,6 +133,12 @@ func (b *BatchedTransport) Stop() error {
 // it for batching. A full queue drops the packet; the tunnel's TCP will
 // retransmit, same as the old "write queue full" behavior.
 func (b *BatchedTransport) Send(data []byte) error {
+	if !b.running.Load() {
+		return fmt.Errorf("batched transport stopped")
+	}
+	if len(data) == 0 || len(data) > maxFrameBytes-4 {
+		return fmt.Errorf("packet size %d out of range", len(data))
+	}
 	p := packetBufPool.Get().([]byte)
 	if cap(p) < len(data) {
 		p = make([]byte, len(data))
@@ -135,7 +163,8 @@ func (b *BatchedTransport) Receive(callback func([]byte)) {
 	b.Transport.Receive(func(data []byte) {
 		pkts, err := decodeBatch(data)
 		if err != nil {
-			utils.Debugf("[BATCH] decode error (%d bytes): %v", len(data), err)
+			b.decodeWarn.Printf("[BATCH] dropped undecodable frame (%d bytes): %v - "+
+				"does the peer use the same --codec and encryption settings?", len(data), err)
 			return
 		}
 		b.mu.RLock()
@@ -152,12 +181,17 @@ func (b *BatchedTransport) Receive(callback func([]byte)) {
 
 func (b *BatchedTransport) flushLoop() {
 	for b.running.Load() {
-		first, ok := <-b.queue
-		if !ok {
+		var first []byte
+		select {
+		case first = <-b.queue:
+		case <-b.stop:
 			return
 		}
 		batch := [][]byte{first}
 		size := 2 + len(first)
+		// fits reports whether p can join the batch without exceeding the
+		// frame cap the transports enforce.
+		fits := func(p []byte) bool { return size+2+len(p)+2 <= maxFrameBytes }
 
 		// Phase 1: absorb everything already queued (burst coalescing). This
 		// alone collapses a window's worth of segments into one message.
@@ -168,6 +202,11 @@ func (b *BatchedTransport) flushLoop() {
 				if !ok {
 					b.sendBatch(batch)
 					return
+				}
+				if !fits(p) {
+					b.sendBatch(batch)
+					batch, size = [][]byte{p}, 2+len(p)
+					continue
 				}
 				batch = append(batch, p)
 				size += 2 + len(p)
@@ -190,10 +229,18 @@ func (b *BatchedTransport) flushLoop() {
 						b.sendBatch(batch)
 						return
 					}
+					if !fits(p) {
+						b.sendBatch(batch)
+						batch, size = [][]byte{p}, 2+len(p)
+						continue
+					}
 					batch = append(batch, p)
 					size += 2 + len(p)
 				case <-timer.C:
 					break linger
+				case <-b.stop:
+					timer.Stop()
+					return
 				}
 			}
 			timer.Stop()

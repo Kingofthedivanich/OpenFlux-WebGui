@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -94,13 +95,23 @@ func (pt *PacketTunnel) handleTCP(r *tcp.ForwarderRequest) {
 			local.Close()
 			return
 		}
-		// Splice both directions; close when either side ends.
+		// Splice both directions with half-close, then fully close both once
+		// each direction has ended.
+		var wg sync.WaitGroup
+		wg.Add(2)
 		go func() {
+			defer wg.Done()
 			io.Copy(remote, local)
-			remote.Close()
-			local.Close()
+			halfClose(remote)
+			remote.SetReadDeadline(time.Now().Add(halfCloseLinger))
 		}()
-		io.Copy(local, remote)
+		go func() {
+			defer wg.Done()
+			io.Copy(local, remote)
+			halfClose(local)
+			local.SetReadDeadline(time.Now().Add(halfCloseLinger))
+		}()
+		wg.Wait()
 		local.Close()
 		remote.Close()
 	})
@@ -195,4 +206,17 @@ func (pt *PacketTunnel) ReadOutbound(ctx context.Context) []byte {
 func (pt *PacketTunnel) Close() {
 	pt.ep.Close()
 	pt.stack.Close()
+}
+
+// halfCloseLinger bounds the direction still open after the other ended, so a
+// peer that never sends FIN cannot pin the flow (goroutine, buffers, endpoint).
+const halfCloseLinger = 120 * time.Second
+
+// halfClose shuts the write side of c if supported, else closes it fully.
+func halfClose(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	c.Close()
 }

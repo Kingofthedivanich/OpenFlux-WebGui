@@ -27,10 +27,18 @@ func NewTunnelLinkEndpoint() *TunnelLinkEndpoint {
 func (e *TunnelLinkEndpoint) InjectInbound(data []byte) {
 	e.packetIn.Add(1)
 	utils.Debugf("<- %d bytes - %s\n", len(data), network.ParsePacketInfo(data))
+	d := e.dispatcher
+	if d == nil {
+		// NIC creation failed or the endpoint was detached; dropping beats a
+		// nil dereference that would crash the whole process from the
+		// transport's receive goroutine.
+		return
+	}
 	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: buffer.MakeWithData(append([]byte{}, data...)),
 	})
-	e.dispatcher.DeliverNetworkPacket(ipv4.ProtocolNumber, pkt)
+	d.DeliverNetworkPacket(ipv4.ProtocolNumber, pkt)
+	pkt.DecRef() // return the buffer to the pool; fdbased does the same
 }
 
 func (e *TunnelLinkEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {

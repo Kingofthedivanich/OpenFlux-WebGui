@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/pierrec/lz4/v4"
 )
@@ -11,11 +12,12 @@ import (
 const (
 	MinCompressSize   = 200
 	CompressionMarker = 0x1F
-	// maxDecompressedSize bounds legacy-codec decompression the same way
-	// framing.go's zstd path bounds its decoder, so a malformed/hostile
-	// LZ4 block can't force unbounded memory allocation.
-	maxDecompressedSize = 8 << 20
+	// maxDecompressedSize bounds legacy-codec decompression: one frame holds
+	// one IP packet, so a hostile LZ4 block cannot make us allocate more.
+	maxDecompressedSize = maxPacketSize
 )
+
+var legacyDecodeWarn = newRateLog(10 * time.Second)
 
 type CompressedTransport struct {
 	Transport
@@ -30,12 +32,13 @@ func (c *CompressedTransport) Send(data []byte) error {
 	return c.Transport.Send(compressed)
 }
 
-
 func (c *CompressedTransport) Receive(callback func([]byte)) {
 	c.Transport.Receive(func(data []byte) {
 		decompressed, err := decompress(data)
 		if err != nil {
-			callback(data) // fallback
+			// Never hand undecoded bytes up as a packet.
+			legacyDecodeWarn.Printf("[LZ4] dropped undecodable frame (%d bytes): %v - "+
+				"does the peer use the same --codec and encryption settings?", len(data), err)
 			return
 		}
 		callback(decompressed)
@@ -72,8 +75,12 @@ func decompress(data []byte) ([]byte, error) {
 		return data, nil
 	}
 
-	if data[0] == 0x00 {
+	switch data[0] {
+	case 0x00:
 		return data[1:], nil
+	case CompressionMarker:
+	default:
+		return nil, fmt.Errorf("unknown legacy frame marker 0x%02x", data[0])
 	}
 
 	r := lz4.NewReader(bytes.NewReader(data[1:]))

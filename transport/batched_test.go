@@ -3,6 +3,8 @@ package transport
 import (
 	"bytes"
 	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -224,5 +226,36 @@ func TestBatchedTransportPoolReuseDoesNotCorruptData(t *testing.T) {
 		if !bytes.Equal(got[i], want[i]) {
 			t.Fatalf("packet %d corrupted (pool reuse bug): got %d bytes, want %d bytes", i, len(got[i]), len(want[i]))
 		}
+	}
+}
+
+// goroutinesRunning counts live goroutines whose stack mentions fn.
+func goroutinesRunning(fn string) int {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	return strings.Count(string(buf), fn)
+}
+
+// Stop must end the flush loop instead of leaving it blocked on the queue.
+func TestBatchedTransportStopEndsFlushLoop(t *testing.T) {
+	const fn = "(*BatchedTransport).flushLoop"
+	before := goroutinesRunning(fn)
+	bt := NewBatchedTransport(&fakeTransport{})
+	if err := bt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	bt.Send([]byte("pkt"))
+	time.Sleep(20 * time.Millisecond)
+	if goroutinesRunning(fn) != before+1 {
+		t.Fatal("flush loop not running after Start")
+	}
+	if err := bt.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if n := goroutinesRunning(fn); n != before {
+		t.Fatalf("flush loop still running after Stop (%d goroutines)", n-before)
+	}
+	if err := bt.Stop(); err != nil {
+		t.Fatalf("second Stop: %v", err)
 	}
 }

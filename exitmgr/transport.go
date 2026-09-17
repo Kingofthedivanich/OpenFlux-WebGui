@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/flynn/noise"
+
 	"openflux/transport"
 	"openflux/transport/cupsonline"
 	"openflux/transport/mailru"
@@ -14,10 +16,12 @@ import (
 )
 
 // BuildTransport constructs the full transport stack for one client
-// (backend -> codec -> optional encryption), mirroring main.go's
-// single-client wiring in main() so a client added through the panel
-// behaves identically to one started via CLI flags.
-func BuildTransport(cfg ClientConfig, base transport.TransportConfig) (transport.Transport, error) {
+// (backend -> codec -> encryption), mirroring main.go's single-client
+// wiring so a client added through the panel behaves identically to one
+// started via CLI flags. Every client shares the panel's own static key
+// (staticKey, loaded once by runExitPanel); cfg.PSKFile optionally closes
+// this one client to strangers who don't have the shared secret.
+func BuildTransport(cfg ClientConfig, base transport.TransportConfig, staticKey noise.DHKey) (transport.Transport, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -48,21 +52,26 @@ func BuildTransport(cfg ClientConfig, base transport.TransportConfig) (transport
 		inner = transport.NewBatchedTransport(inner)
 	}
 
-	if cfg.EncryptionKeyFile != "" {
-		secretBytes, err := os.ReadFile(cfg.EncryptionKeyFile)
+	var psk []byte
+	if cfg.PSKFile != "" {
+		secretBytes, err := os.ReadFile(cfg.PSKFile)
 		if err != nil {
-			return nil, fmt.Errorf("read encryption key: %w", err)
+			return nil, fmt.Errorf("read psk file: %w", err)
 		}
-		ctx := cfg.Transport
-		if cfg.URL != "" {
-			ctx = cfg.URL
-		}
-		enc, err := transport.NewEncryptedTransport(inner, strings.TrimSpace(string(secretBytes)), ctx, true)
+		psk, err = transport.DerivePSK(strings.TrimSpace(string(secretBytes)))
 		if err != nil {
-			return nil, fmt.Errorf("configure encryption: %w", err)
+			return nil, fmt.Errorf("psk file: %w", err)
 		}
-		inner = enc
 	}
 
-	return inner, nil
+	enc, err := transport.NewEncryptedTransport(inner, transport.EncryptedConfig{
+		Initiator: false,
+		StaticKey: staticKey,
+		PSK:       psk,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure encryption: %w", err)
+	}
+
+	return enc, nil
 }

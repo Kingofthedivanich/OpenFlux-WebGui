@@ -4,7 +4,7 @@
 #   exit-node — raw sockets + RST-drop, needs NET_RAW/NET_ADMIN (see compose)
 # Role is selected at runtime by the entrypoint from ROLE=client|exit-node.
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 
 # Cache module downloads across builds.

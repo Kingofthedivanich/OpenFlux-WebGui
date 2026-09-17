@@ -19,8 +19,8 @@ type ClientConfig struct {
 	MaxToken string `json:"max_token,omitempty"` // oneme
 	MaxUid   string `json:"max_uid,omitempty"`   // oneme
 
-	Codec             string `json:"codec,omitempty"`               // "" (batched, default) | "legacy"
-	EncryptionKeyFile string `json:"encryption_key_file,omitempty"` // optional AES-256-GCM key file path
+	Codec   string `json:"codec,omitempty"`             // "" (batched, default) | "legacy"
+	PSKFile string `json:"psk_file,omitempty"`          // optional: file with a shared secret that closes this client to strangers
 }
 
 var validTransports = map[string]bool{
