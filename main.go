@@ -97,6 +97,8 @@ func main() {
 			"The public key is printed at startup for clients")
 	peerKey := flag.String("peer-key", "",
 		"Client: the exit node's public key (from its startup banner). Turns the encrypted transport on")
+	allowPlaintext := flag.Bool("allow-plaintext", false,
+		"Run without encryption. UNSAFE: anyone with access to the document can read the traffic and use the exit node")
 	pskFile := flag.String("psk-file", "",
 		"Optional, both peers: file with a shared secret (16+ characters). The exit node then refuses clients without it")
 
@@ -177,6 +179,8 @@ ENCRYPTION  (Noise NKpsk0: X25519 + AES-256-GCM, session keys rotate every 2 min
       --peer-key=<base64>      Client: the exit node's public key. Turns encryption on.
       --psk-file=<path>        Both, optional: shared secret (16+ chars). The exit then
                                refuses clients that do not have it.
+      --allow-plaintext        Run without encryption (unsafe; encryption is required
+                               otherwise).
 
 BENCHMARK  (only with --role=bench-*)
       --bench-bytes=<MB>       MB to push (bench-send).
@@ -344,11 +348,15 @@ DEPRECATED (removed in v2)
 		psk = secret
 	}
 	initiator := *role == roleClient || *role == roleBenchSend
-	enc, err := newEncryptionSetup(encryptionOptions{ExitKeyFile: *exitKeyFile, PeerKey: *peerKey, PSK: psk}, initiator)
+	enc, err := newEncryptionSetup(encryptionOptions{
+		ExitKeyFile: *exitKeyFile, PeerKey: *peerKey, PSK: psk, AllowPlaintext: *allowPlaintext,
+	}, initiator)
 	if err != nil {
 		log.Fatalf("Encryption: %v", err)
 	}
-	if enc != nil {
+	if enc == nil {
+		log.Printf("WARNING: --allow-plaintext: the tunnel is NOT encrypted or authenticated")
+	} else {
 		log.Printf("Transport encryption: %s", enc.label)
 		fmt.Print(enc.banner)
 	}
@@ -385,9 +393,6 @@ DEPRECATED (removed in v2)
 		return
 	}
 
-	if err := trans.Start(); err != nil {
-		log.Fatalf("Failed to start transport: %v", err)
-	}
 	if ms, ok := trans.(*transport.MultiStreamTransport); ok && *statusEvery > 0 {
 		go multistreamStatusLoop(ms, urls, *statusEvery)
 	}
@@ -454,9 +459,12 @@ func runExit(trans transport.Transport, exitMode tunnel.ExitMode, upstreamProxy 
 	} else {
 		log.Printf("Running as EXIT NODE (mode=%s)", ex.Mode())
 	}
+	// The exit node registers its receive callback in Start, so the transport
+	// starts afterwards and no early frame is dropped.
 	if err := ex.Start(); err != nil {
 		log.Fatalf("exit start: %v", err)
 	}
+	startTransport(trans)
 
 	// L3 SNAT rewrites source IPs; the kernel sees return packets for
 	// connections it never opened and emits RST, tearing them down.
@@ -483,9 +491,18 @@ func runExit(trans transport.Transport, exitMode tunnel.ExitMode, upstreamProxy 
 	log.Printf("Shutdown complete")
 }
 
+func startTransport(trans transport.Transport) {
+	if err := trans.Start(); err != nil {
+		log.Fatalf("Failed to start transport: %v", err)
+	}
+}
+
 func runClient(trans transport.Transport, inbound, socksAddr string, exitMode tunnel.ExitMode) {
 	switch inbound {
 	case inboundTUN:
+		// The utun client waits for the transport's sockets before taking the
+		// default route, so the transport has to be up first.
+		startTransport(trans)
 		runClientTUN(trans)
 	case inboundSOCKS5:
 		// Explicit opt-in to the legacy SOCKS5+gVisor client. Kept as a fallback
@@ -495,6 +512,7 @@ func runClient(trans transport.Transport, inbound, socksAddr string, exitMode tu
 		if err != nil {
 			log.Fatalf("tunnel init: %v", err)
 		}
+		startTransport(trans)
 		socks5Server := socks5.NewSOCKS5Server(socksAddr, tun)
 		log.Fatal(socks5Server.Start())
 	default:

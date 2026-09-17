@@ -33,7 +33,6 @@ func TestBatchRoundTripManyPackets(t *testing.T) {
 		[]byte("first"),
 		{0x00, 0x01, 0x02, 0xfe, 0xff},
 		[]byte("a much longer third packet with some repetition repetition repetition"),
-		{},
 		[]byte("last"),
 	}
 	assertBatchRoundTrip(t, pkts)
@@ -106,5 +105,63 @@ func TestDecodeBatchRejectsTruncatedLengthPrefix(t *testing.T) {
 func TestDecodeBatchRejectsShortFrame(t *testing.T) {
 	if _, err := decodeBatch([]byte{batchFormatVersion}); err == nil {
 		t.Fatal("expected error for frame shorter than header")
+	}
+}
+
+// A tiny zstd frame of zeros used to expand into millions of empty records
+// (hundreds of MB of allocations per document message).
+func TestDecodeBatchRejectsEmptyRecordBomb(t *testing.T) {
+	zeros := make([]byte, maxBatchDecoded)
+	frame := append([]byte{batchFormatVersion, batchFlagZstd}, zstdEnc.EncodeAll(zeros, nil)...)
+	if len(frame) > 4096 {
+		t.Fatalf("test frame unexpectedly large: %d bytes", len(frame))
+	}
+	if _, err := decodeBatch(frame); err == nil {
+		t.Fatal("decodeBatch accepted a frame of empty records")
+	}
+}
+
+func TestDecodeBatchRejectsTooManyRecords(t *testing.T) {
+	pkts := make([][]byte, maxBatchRecords+1)
+	for i := range pkts {
+		pkts[i] = []byte{1}
+	}
+	if _, err := decodeBatch(encodeBatch(pkts)); err == nil {
+		t.Fatal("decodeBatch accepted more than maxBatchRecords packets")
+	}
+}
+
+func TestDecodeBatchRejectsOversizedOutput(t *testing.T) {
+	big := make([]byte, maxPacketSize)
+	pkts := make([][]byte, maxBatchDecoded/maxPacketSize+2)
+	for i := range pkts {
+		pkts[i] = big
+	}
+	if _, err := decodeBatch(encodeBatch(pkts)); err == nil {
+		t.Fatal("decodeBatch accepted a frame above maxBatchDecoded")
+	}
+}
+
+func TestBatchedSendRejectsBadSizes(t *testing.T) {
+	bt := NewBatchedTransport(&fakeTransport{})
+	bt.running.Store(true)
+	if err := bt.Send(nil); err == nil {
+		t.Fatal("Send accepted an empty packet")
+	}
+	if err := bt.Send(make([]byte, maxPacketSize+1)); err == nil {
+		t.Fatal("Send accepted a packet longer than the length prefix allows")
+	}
+}
+
+func TestLegacyDecompressRejectsUnknownMarkerAndBomb(t *testing.T) {
+	if _, err := decompress([]byte{0x45, 1, 2, 3}); err == nil {
+		t.Fatal("decompress passed a frame with an unknown marker")
+	}
+	bomb := compress(make([]byte, 1<<20))
+	if bomb[0] != CompressionMarker {
+		t.Fatal("expected an LZ4 frame")
+	}
+	if _, err := decompress(bomb); err == nil {
+		t.Fatal("decompress accepted output larger than one packet")
 	}
 }

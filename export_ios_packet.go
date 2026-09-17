@@ -71,7 +71,7 @@ func OpenFluxStartPacketTunnel(transportType, url, maxToken, maxUid *C.char) (rc
 	debug.SetMemoryLimit(40 << 20)
 	debug.SetGCPercent(20)
 
-	enc, err := newEncryptionSetup(encryptionOptions{PeerKey: bridgePeerKey, PSK: bridgePSK}, true)
+	enc, err := newEncryptionSetup(bridgeEncryptionOptions(), true)
 	if err != nil {
 		utils.Debugf("[PKT] Encryption: %v", err)
 		return C.int(startBadEncryption)
