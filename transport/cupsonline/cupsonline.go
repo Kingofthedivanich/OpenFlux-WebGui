@@ -97,6 +97,7 @@ var (
 )
 
 type cupsAuth struct {
+	roomURL    string
 	roomUUID   string
 	userUUID   string
 	connToken  string
@@ -141,6 +142,7 @@ func authorize(roomURL string) (*cupsAuth, error) {
 
 	html := string(body)
 	a := &cupsAuth{
+		roomURL:    roomURL,
 		roomUUID:   firstMatch(reDataRoomUUID, html),
 		userUUID:   firstMatch(reDataUserUUID, html),
 		connToken:  firstMatch(reMetaConnToken, html),
@@ -330,6 +332,16 @@ func (w *cupsWS) run() {
 		}
 		if err := w.connectAndServe(); err != nil {
 			utils.Debugf("[CUPS] ws error (%s): %v", w.auth.roomUUID, err)
+			// При ошибке подключения (например, если протух токен сессии/JWT или заблокирована комната)
+			// заново выполняем авторизацию комнаты для получения свежих токенов и cookies.
+			if w.auth != nil && w.auth.roomURL != "" {
+				if newAuth, authErr := authorize(w.auth.roomURL); authErr == nil {
+					w.auth = newAuth
+					utils.Debugf("[CUPS] re-authorize OK: room=%s", w.auth.roomUUID)
+				} else {
+					utils.Debugf("[CUPS] re-authorize failed (%s): %v", w.auth.roomUUID, authErr)
+				}
+			}
 		}
 		w.connected.Store(false)
 		if w.closed.Load() {

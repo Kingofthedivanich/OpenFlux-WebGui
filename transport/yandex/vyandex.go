@@ -121,6 +121,7 @@ type VolgaStats struct {
 }
 
 type volgaAuth struct {
+	docURL      string
 	Session     *http.Client
 	AccessToken string
 	Token       string
@@ -235,6 +236,7 @@ func authorize(docURL string) (*volgaAuth, error) {
 	utils.Debugf("[VOLGA] access_token_ttl: %v (%T)", ttl, ttl)
 
 	a := &volgaAuth{
+		docURL:      docURL,
 		Session:     session,
 		AccessToken: accessToken,
 		ResourceURL: getStr(office, "resource_url"),
@@ -748,6 +750,19 @@ func (w *wsListener) run() {
 		connStart := time.Now()
 		if err := w.connect(); err != nil {
 			utils.Debugf("[VOLGA] WS error: %v", err)
+			// При ошибке WebSocket (например, когда истек токен/сессия Yandex Volga или закрылось соединение)
+			// выполняем повторную авторизацию документа для получения свежих токенов и cookies.
+			if w.auth != nil && w.auth.docURL != "" {
+				if newAuth, authErr := authorize(w.auth.docURL); authErr == nil {
+					w.auth = newAuth
+					if w.relay != nil {
+						w.relay.auth = newAuth
+					}
+					utils.Debugf("[VOLGA] re-authorize OK: user=%s", w.auth.UserIDStr)
+				} else {
+					utils.Debugf("[VOLGA] re-authorize failed: %v", authErr)
+				}
+			}
 		}
 		if w.ctx.Err() != nil {
 			return
