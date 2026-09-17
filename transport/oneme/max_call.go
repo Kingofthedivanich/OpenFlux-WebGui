@@ -45,7 +45,7 @@ func (h *CallHandler) readLoop() {
 		text := string(message)
 
 		if strings.Contains(text, "accepted-call") {
-			fmt.Println("call accepted")
+			logDebug("[%s] call accepted", h.tag)
 			h.callAccepted = true
 			continue
 		}
@@ -226,8 +226,7 @@ func (h *CallHandler) sendSDP(sdp string, sdpType string) {
 	msg := fmt.Sprintf(`{"command":"transmit-data","sequence":%d,"participantId":%d,"data":{"sdp":{"type":"%s","sdp":%s},"animojiVersion":1},"participantType":"USER"}`,
 		h.seq, h.localID, sdpType, string(escaped))
 	h.seq++
-	logInfo("[%s] Sent SDP %s (%d bytes)", h.tag, sdpType, len(sdp))
-	fmt.Println(msg)
+	logInfo("[%s] Sent SDP %s (%d bytes, frame %d)", h.tag, sdpType, len(sdp), len(msg))
 	//h.conn.WriteMessage(websocket.TextMessage, []byte(msg))
 }
 
@@ -379,7 +378,7 @@ func startOutgoingCall(client *MaxClient, calleeID int64) *CallHandler {
 			logInfo("[%s] conversationParams - creating offer", h.tag)
 			for {
 				time.Sleep(1 * time.Second)
-				fmt.Println("waiting for accept ...")
+				logDebug("[%s] waiting for accept ...", h.tag)
 				if h.callAccepted || useICEInjection {
 					break
 				}
@@ -546,7 +545,7 @@ func startIncomingListener(client *MaxClient) *CallHandler {
 			}
 
 			endpoint := craftEndpoint(convID, callDetails)
-			logInfo("[RECEIVER] Initial endpoint: %s", endpoint)
+			logInfo("[RECEIVER] Initial endpoint: %s", maskURL(endpoint))
 
 			conn, _, err := websocket.DefaultDialer.Dial(endpoint, nil)
 			if err != nil {
