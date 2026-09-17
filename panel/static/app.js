@@ -106,7 +106,7 @@ addForm.addEventListener("submit", async (e) => {
     max_token: document.getElementById("f-max-token").value,
     max_uid: document.getElementById("f-max-uid").value,
     codec: document.getElementById("f-codec").value,
-    encryption_key_file: document.getElementById("f-enc-key").value,
+    psk_file: document.getElementById("f-psk-file").value,
   };
 
   try {

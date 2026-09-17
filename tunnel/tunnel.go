@@ -1,13 +1,17 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/net/proxy"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -16,6 +20,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
+	"openflux/netguard"
 	"openflux/transport"
 	"openflux/utils"
 )
@@ -50,17 +55,42 @@ func ParseExitMode(s string) (ExitMode, error) {
 	}
 }
 
-type TCPTunnel struct {
-	gvisorStack *stack.Stack
-	tunnelEP    *TunnelLinkEndpoint
-	transport   transport.Transport
-	isExitNode  bool
-	exitMode    ExitMode
-	startTime   time.Time
-	packetCount atomic.Uint64
+func parseSOCKS5(proxyStr string) (string, *proxy.Auth, error) {
+	if !strings.Contains(proxyStr, "://") {
+		proxyStr = "socks5://" + proxyStr
+	}
+	u, err := url.Parse(proxyStr)
+	if err != nil {
+		return "", nil, err
+	}
+	var auth *proxy.Auth
+	if u.User != nil {
+		auth = &proxy.Auth{
+			User: u.User.Username(),
+		}
+		if pass, ok := u.User.Password(); ok {
+			auth.Password = pass
+		}
+	}
+	host := u.Host
+	if strings.HasPrefix(host, ":") {
+		host = "127.0.0.1" + host
+	}
+	return host, auth, nil
+}
 
-	done      chan struct{}
-	closeOnce sync.Once
+type TCPTunnel struct {
+	gvisorStack   *stack.Stack
+	tunnelEP      *TunnelLinkEndpoint
+	transport     transport.Transport
+	isExitNode    bool
+	exitMode      ExitMode
+	upstreamProxy string
+	dialer        proxy.Dialer
+	startTime     time.Time
+	packetCount   atomic.Uint64
+	closed        chan struct{}
+	closeOnce     sync.Once
 }
 
 // TCP buffer size range for gvisor stacks.
@@ -82,17 +112,25 @@ func SetTCPBuffers(s *stack.Stack) {
 	}
 }
 
-func NewTCPTunnel(trans transport.Transport, isExitNode bool) (*TCPTunnel, error) {
-	return NewTCPTunnelMode(trans, isExitNode, ExitModeL4)
+func NewTCPTunnel(trans transport.Transport, isExitNode bool, upstreamProxy ...string) (*TCPTunnel, error) {
+	proxy := ""
+	if len(upstreamProxy) > 0 {
+		proxy = upstreamProxy[0]
+	}
+	return NewTCPTunnelModeWithProxy(trans, isExitNode, ExitModeL4, proxy)
 }
 
 func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode) (*TCPTunnel, error) {
+	return NewTCPTunnelModeWithProxy(trans, isExitNode, mode, "")
+}
+
+func NewTCPTunnelModeWithProxy(trans transport.Transport, isExitNode bool, mode ExitMode, upstreamProxy string) (*TCPTunnel, error) {
 	t := &TCPTunnel{
-		transport:  trans,
-		isExitNode: isExitNode,
-		exitMode:   mode,
-		startTime:  time.Now(),
-		done:       make(chan struct{}),
+		transport:     trans,
+		isExitNode:    isExitNode,
+		exitMode:      mode,
+		upstreamProxy: upstreamProxy,
+		startTime:     time.Now(),
 	}
 
 	utils.Debugf("[TUNNEL] Net stack init...")
@@ -102,6 +140,16 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 	})
 
 	SetTCPBuffers(t.gvisorStack)
+
+	// Detect loss only by duplicate ACKs and the RTO, without RACK-TLP. The
+	// document relay delivers every message in order but sometimes holds them
+	// for hundreds of milliseconds; RACK-TLP takes each hold for a loss and
+	// halves the window, and gVisor never undoes that, which kept uploads
+	// through the tunnel at ~100 KB/s.
+	recovery := tcpip.TCPRecovery(0)
+	if err := t.gvisorStack.SetTransportProtocolOption(tcp.ProtocolNumber, &recovery); err != nil {
+		utils.Debugf("[TUNNEL] disable RACK-TLP: %v", err)
+	}
 
 	tunnelEP := NewTunnelLinkEndpoint()
 	tunnelEP.onOutgoingPacket = func(data []byte) {
@@ -126,6 +174,7 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 		tunnelEP.InjectInbound(data)
 	})
 
+	t.closed = make(chan struct{})
 	utils.SafeGo("tunnel.printStats", t.printStats)
 	return t, nil
 }
@@ -133,7 +182,30 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 // ---- exit node: proxy ----
 
 func (t *TCPTunnel) setupExitNodeProxy(tunnelNIC tcpip.NICID) {
-	utils.Debugf("[TUNNEL] EXIT NODE - proxy mode (no raw sockets)")
+	baseDialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	if t.upstreamProxy == "" || strings.ToLower(t.upstreamProxy) == "direct" {
+		t.dialer = baseDialer
+		utils.Debugf("[TUNNEL] EXIT NODE - proxy mode (direct connection, no upstream SOCKS5)")
+	} else {
+		proxyHost, auth, err := parseSOCKS5(t.upstreamProxy)
+		if err != nil {
+			utils.Debugf("[TUNNEL] Invalid upstream proxy %q: %v", t.upstreamProxy, err)
+			t.dialer = baseDialer
+		} else {
+			d, err := proxy.SOCKS5("tcp", proxyHost, auth, baseDialer)
+			if err != nil {
+				utils.Debugf("[TUNNEL] Failed to create SOCKS5 dialer for %s: %v", proxyHost, err)
+				t.dialer = baseDialer
+			} else {
+				t.dialer = d
+				utils.Debugf("[TUNNEL] EXIT NODE - Routing via SOCKS5 proxy %s", proxyHost)
+			}
+		}
+	}
 
 	t.gvisorStack.SetPromiscuousMode(tunnelNIC, true)
 	t.gvisorStack.SetSpoofing(tunnelNIC, true)
@@ -172,26 +244,51 @@ func copyWithIdleTimeout(dst, src net.Conn, buf []byte, idleTimeout time.Duratio
 }
 
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
-	id := r.ID()
-	dest := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
-
-	var wq waiter.Queue
-	ep, tErr := r.CreateEndpoint(&wq)
-	if tErr != nil {
-		utils.Debugf("[EXIT] CreateEndpoint %s: %v", dest, tErr)
+	reqID := r.ID()
+	dstIP := net.IP(reqID.LocalAddress.AsSlice())
+	if netguard.Blocked(dstIP) {
+		utils.Debugf("[EXIT] refused blocked destination %s (use --allow-private to permit)", dstIP)
 		r.Complete(true)
 		return
 	}
-	r.Complete(false)
-	local := gonet.NewTCPConn(&wq, ep)
+	dest := net.JoinHostPort(dstIP.String(), strconv.Itoa(int(reqID.LocalPort)))
 
 	utils.SafeGo("exit.flow", func() {
-		remote, err := net.DialTimeout("tcp", dest, 10*time.Second)
+		dialer := t.dialer
+		if dialer == nil {
+			dialer = &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		var remote net.Conn
+		var err error
+		if cd, ok := dialer.(proxy.ContextDialer); ok {
+			remote, err = cd.DialContext(ctx, "tcp", dest)
+		} else {
+			remote, err = dialer.Dial("tcp", dest)
+		}
+
 		if err != nil {
 			utils.Debugf("[EXIT] dial %s failed: %v", dest, err)
-			local.Close()
+			r.Complete(true)
 			return
 		}
+		defer remote.Close()
+
+		var wq waiter.Queue
+		ep, tErr := r.CreateEndpoint(&wq)
+		if tErr != nil {
+			utils.Debugf("[EXIT] CreateEndpoint %s: %v", dest, tErr)
+			r.Complete(true)
+			return
+		}
+		r.Complete(false)
+
+		local := gonet.NewTCPConn(&wq, ep)
+		defer local.Close()
+
 		if tc, ok := remote.(*net.TCPConn); ok {
 			_ = tc.SetNoDelay(true)
 			_ = tc.SetReadBuffer(16 * 1024 * 1024)
@@ -199,16 +296,28 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 		}
 		utils.Debugf("[EXIT] %s connected", dest)
 
+		var wg sync.WaitGroup
+		wg.Add(2)
+
 		go func() {
+			defer wg.Done()
 			buf := make([]byte, 256*1024)
 			copyWithIdleTimeout(remote, local, buf, l4IdleTimeout)
-			remote.Close()
-			local.Close()
+			halfClose(remote)
+			remote.SetReadDeadline(time.Now().Add(halfCloseLinger))
 		}()
-		buf := make([]byte, 256*1024)
-		copyWithIdleTimeout(local, remote, buf, l4IdleTimeout)
-		local.Close()
-		remote.Close()
+
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 256*1024)
+			copyWithIdleTimeout(local, remote, buf, l4IdleTimeout)
+			// Half-close: let the local->remote direction keep flowing after
+			// the server stops sending, instead of tearing the flow down.
+			halfClose(local)
+			local.SetReadDeadline(time.Now().Add(halfCloseLinger))
+		}()
+
+		wg.Wait()
 	})
 }
 
@@ -269,29 +378,34 @@ func (t *TCPTunnel) printStats() {
 
 	for {
 		select {
-		case <-t.done:
+		case <-t.closed:
 			return
 		case <-ticker.C:
-			stats := t.gvisorStack.Stats()
-			utils.Debugf("[STATS] uptime=%v mode=%s packets=%d connected=%d established=%d retrans=%d",
-				time.Since(t.startTime).Round(time.Second),
-				t.exitMode.String(),
-				t.packetCount.Load(),
-				stats.TCP.CurrentConnected.Value(),
-				stats.TCP.CurrentEstablished.Value(),
-				stats.TCP.Retransmits.Value(),
-			)
 		}
+		stats := t.gvisorStack.Stats()
+		utils.Debugf("[STATS] uptime=%v mode=%s packets=%d connected=%d established=%d retrans=%d",
+			time.Since(t.startTime).Round(time.Second),
+			t.exitMode.String(),
+			t.packetCount.Load(),
+			stats.TCP.CurrentConnected.Value(),
+			stats.TCP.CurrentEstablished.Value(),
+			stats.TCP.Retransmits.Value(),
+		)
 	}
 }
 
 // Close stops the stats loop and tears down the gVisor stack. It does not
 // touch the underlying transport; callers that own the transport (e.g.
-// exitmgr.Manager) are responsible for stopping that separately.
+// exitmgr.Manager) are responsible for stopping that separately. Safe to
+// call more than once.
 func (t *TCPTunnel) Close() error {
 	t.closeOnce.Do(func() {
-		close(t.done)
-		t.gvisorStack.Close()
+		if t.closed != nil {
+			close(t.closed)
+		}
+		if t.gvisorStack != nil {
+			t.gvisorStack.Close()
+		}
 	})
 	return nil
 }

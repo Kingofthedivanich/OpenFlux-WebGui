@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"openflux/utils"
 )
@@ -86,6 +87,26 @@ func (s *SOCKS5Server) Close() error {
 	return nil
 }
 
+// sendReply writes a SOCKS5 reply with the given REP code and a zeroed
+// IPv4 BND.ADDR/BND.PORT, as required by RFC 1928 section 6.
+func sendReply(conn net.Conn, rep byte) {
+	conn.Write([]byte{0x05, rep, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+}
+
+// halfCloseLinger bounds the direction that is still open after the other
+// one ended; without it a peer that never sends FIN keeps the flow forever.
+const halfCloseLinger = 120 * time.Second
+
+// closeWrite half-closes the send side of c if it supports it (TCP and gVisor
+// conns do), otherwise closes it fully.
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	c.Close()
+}
+
 func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	// A malformed request must never crash the host process; contain any
 	// panic to this connection.
@@ -96,65 +117,115 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	}()
 	defer clientConn.Close()
 
-	buf := make([]byte, 256)
-	n, err := clientConn.Read(buf)
-	if err != nil || n < 2 || buf[0] != 0x05 {
+	// Bound the handshake so a client that connects and never finishes cannot
+	// pin a goroutine forever (slowloris). Cleared once data forwarding starts.
+	clientConn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	// Greeting: VER NMETHODS METHODS. Fields are read with io.ReadFull to
+	// their exact RFC 1928 lengths: a single Read may return a fragmented
+	// message, and TCP makes no guarantees about message boundaries.
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(clientConn, head); err != nil || head[0] != 0x05 {
+		return
+	}
+	if head[1] > 0 {
+		methods := make([]byte, head[1])
+		if _, err := io.ReadFull(clientConn, methods); err != nil {
+			return
+		}
+	}
+	if _, err := clientConn.Write([]byte{0x05, 0x00}); err != nil {
 		return
 	}
 
-	clientConn.Write([]byte{0x05, 0x00})
-
-	n, err = clientConn.Read(buf)
-	if err != nil || n < 10 || buf[1] != 0x01 {
+	// Request: VER CMD RSV ATYP DST.ADDR DST.PORT
+	req := make([]byte, 4)
+	if _, err := io.ReadFull(clientConn, req); err != nil || req[0] != 0x05 {
+		return
+	}
+	if req[1] != 0x01 {
+		sendReply(clientConn, 0x07) // command not supported
 		return
 	}
 
 	var targetAddr string
-	switch buf[3] {
+	switch req[3] {
 	case 0x01:
+		addr := make([]byte, 6)
+		if _, err := io.ReadFull(clientConn, addr); err != nil {
+			return
+		}
 		targetAddr = fmt.Sprintf("%d.%d.%d.%d:%d",
-			buf[4], buf[5], buf[6], buf[7],
-			uint16(buf[8])<<8|uint16(buf[9]))
+			addr[0], addr[1], addr[2], addr[3],
+			uint16(addr[4])<<8|uint16(addr[5]))
 	case 0x03:
-		domainLen := int(buf[4])
-		// Bounds-check against what was actually read: address (domainLen
-		// bytes) starts at index 5 and is followed by a 2-byte port.
-		if domainLen == 0 || 5+domainLen+2 > n {
-			utils.Debugf("[SOCKS5] Bad domain request (len=%d, n=%d)", domainLen, n)
+		lenBuf := make([]byte, 1)
+		if _, err := io.ReadFull(clientConn, lenBuf); err != nil {
+			return
+		}
+		domain := make([]byte, lenBuf[0])
+		if len(domain) == 0 {
+			return
+		}
+		if _, err := io.ReadFull(clientConn, domain); err != nil {
+			return
+		}
+		port := make([]byte, 2)
+		if _, err := io.ReadFull(clientConn, port); err != nil {
 			return
 		}
 		targetAddr = fmt.Sprintf("%s:%d",
-			string(buf[5:5+domainLen]),
-			uint16(buf[5+domainLen])<<8|uint16(buf[6+domainLen]))
+			string(domain),
+			uint16(port[0])<<8|uint16(port[1]))
+	case 0x04:
+		addr := make([]byte, 18)
+		if _, err := io.ReadFull(clientConn, addr); err != nil {
+			return
+		}
+		targetAddr = fmt.Sprintf("[%s]:%d",
+			net.IP(addr[:16]).String(),
+			uint16(addr[16])<<8|uint16(addr[17]))
 	default:
+		sendReply(clientConn, 0x08) // address type not supported
 		return
 	}
 
 	utils.Debugf("[SOCKS5] CONNECT %s", targetAddr)
 
+	// Handshake parsed; the tunnel dial can legitimately take longer than the
+	// handshake deadline over a slow document relay, so lift it here.
+	clientConn.SetDeadline(time.Time{})
+
 	targetConn, err := s.dialer.DialTCP(targetAddr)
 	if err != nil {
 		utils.Debugf("[SOCKS5] Dial failed: %v", err)
-		clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+		sendReply(clientConn, 0x04)
 		return
 	}
 	defer targetConn.Close()
 
-	clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if _, err := clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}); err != nil {
+		return
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Half-close each direction independently: an EOF one way must not abort
+	// data still flowing the other way (e.g. an HTTP request body after the
+	// response headers).
 	go func() {
 		defer wg.Done()
-		defer targetConn.Close()
 		io.Copy(targetConn, clientConn)
+		closeWrite(targetConn)
+		targetConn.SetReadDeadline(time.Now().Add(halfCloseLinger))
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer clientConn.Close()
 		io.Copy(clientConn, targetConn)
+		closeWrite(clientConn)
+		clientConn.SetReadDeadline(time.Now().Add(halfCloseLinger))
 	}()
 
 	wg.Wait()

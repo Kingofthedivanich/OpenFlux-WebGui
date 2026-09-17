@@ -22,7 +22,6 @@ import (
 	"openflux/network"
 	"openflux/transport"
 	"openflux/transport/oneme"
-	"openflux/transport/yandex"
 	"openflux/utils"
 )
 
@@ -72,16 +71,26 @@ func OpenFluxStartPacketTunnel(transportType, url, maxToken, maxUid *C.char) (rc
 	debug.SetMemoryLimit(40 << 20)
 	debug.SetGCPercent(20)
 
+	enc, err := newEncryptionSetup(bridgeEncryptionOptions(), true)
+	if err != nil {
+		utils.Debugf("[PKT] Encryption: %v", err)
+		return C.int(startBadEncryption)
+	}
+
 	config := transport.DefaultConfig()
 	var t transport.Transport
 	switch tt {
-	case "yandex", "":
-		t = transport.NewCompressedTransport(yandex.NewYandexDocsTransport(docURL, config))
+	case "yandex", "", "vyandex":
+		t, err = newBridgeDocStreams(tt, docURL, enc, config)
 	case "oneme":
 		uidint, _ := strconv.ParseInt(mUid, 10, 64)
-		t = transport.NewCompressedTransport(oneme.NewOneMeTransport(false, mToken, uidint, config))
+		t, err = newBridgeStream(oneme.NewOneMeTransport(false, mToken, uidint, config), enc)
 	default:
 		return C.int(startBadTransport)
+	}
+	if err != nil {
+		utils.Debugf("[PKT] Configure encrypted transport: %v", err)
+		return C.int(startBadEncryption)
 	}
 
 	outQ := make(chan []byte, 1024)

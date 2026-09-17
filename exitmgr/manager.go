@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flynn/noise"
+
 	"openflux/transport"
 	"openflux/tunnel"
 )
@@ -48,8 +50,12 @@ type Manager struct {
 
 // NewManager creates an empty Manager. store may be nil to disable
 // persistence (clients then only live for the process's lifetime).
-func NewManager(store *Store) *Manager {
-	return NewManagerWithBuilder(store, BuildTransport)
+// staticKey is the panel's own Noise identity, shared by every client's
+// encrypted transport (see BuildTransport).
+func NewManager(store *Store, staticKey noise.DHKey) *Manager {
+	return NewManagerWithBuilder(store, func(cfg ClientConfig, base transport.TransportConfig) (transport.Transport, error) {
+		return BuildTransport(cfg, base, staticKey)
+	})
 }
 
 // NewManagerWithBuilder is NewManager with transport construction injected,

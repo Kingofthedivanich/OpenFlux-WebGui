@@ -2,9 +2,11 @@ package l3
 
 import (
 	"fmt"
+	"net"
 	"sync/atomic"
 	"time"
 
+	"openflux/netguard"
 	"openflux/transport"
 	"openflux/utils"
 )
@@ -29,6 +31,8 @@ type L3Exit struct {
 	dropNoFlowKey    atomic.Uint64
 	dropNoConntrack  atomic.Uint64
 	dropNotForUs     atomic.Uint64
+	dropBlocked      atomic.Uint64
+	dropFrag         atomic.Uint64
 	sendToNetErrors  atomic.Uint64
 	sendToClientErrs atomic.Uint64
 }
@@ -60,6 +64,9 @@ func (t *L3Exit) Start() error {
 }
 
 func (t *L3Exit) Stop() error {
+	// Detach from the transport first so no packet is forwarded to a closed
+	// (or reused) raw socket after Close.
+	t.trans.Receive(func([]byte) {})
 	t.ct.Close()
 	return t.backend.Close()
 }
@@ -75,10 +82,22 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 	}
 	pkt = sl
 
+	if isFragmented(pkt) {
+		t.dropFrag.Add(1)
+		return
+	}
+
 	// A client-originated RST must reach the real destination like any other
 	// packet (dropping it here left the real server's connection half-open);
 	// isTCPClosing below already recognizes RST and marks the conntrack
 	// entry as dying so it expires in the short "closing" bucket.
+	if netguard.Blocked(net.IP(pkt[16:20])) {
+		t.dropBlocked.Add(1)
+		utils.Debugf("[L3] drop: blocked destination %d.%d.%d.%d (use --allow-private)",
+			pkt[16], pkt[17], pkt[18], pkt[19])
+		return
+	}
+
 	rewriteSNAT(pkt, t.backend.EgressIP())
 	fixChecksums(pkt)
 
@@ -88,7 +107,7 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 		utils.Debugf("[L3] drop: no flow key")
 		return
 	}
-	t.ct.Insert(k)
+	t.ct.Insert(k, isTCPSyn(pkt))
 	if isTCPClosing(pkt) {
 		t.ct.Touch(k, true)
 	}
@@ -116,6 +135,11 @@ func (t *L3Exit) handleFromInternet(pkt []byte) {
 	}
 	pkt = sl
 
+	if isFragmented(pkt) {
+		t.dropFrag.Add(1)
+		return
+	}
+
 	// Only handle packets addressed to OUR egress IP. SOCK_RAW on Linux
 	// sees every TCP packet on the wire, including unrelated SSH sessions
 	// and the exit's own outbound traffic. Everything else is noise.
@@ -140,7 +164,7 @@ func (t *L3Exit) handleFromInternet(pkt []byte) {
 		}
 		return
 	}
-	t.ct.Touch(rk, isTCPClosing(pkt))
+	t.ct.TouchReplied(rk, isTCPClosing(pkt))
 	rewriteDNAT(pkt, clientIPBytes)
 	fixChecksums(pkt)
 
@@ -167,13 +191,14 @@ func (t *L3Exit) statsLoop() {
 		dropNoKey := t.dropNoFlowKey.Load()
 		dropNoCt := t.dropNoConntrack.Load()
 		dropNotUs := t.dropNotForUs.Load()
+		dropBlk := t.dropBlocked.Load()
 
-		utils.Debugf("[L3-STATS] fromTr=%d(+%d) toNet=%d(+%d) | fromNet=%d(+%d) toCli=%d(+%d) | drops: bad=%d rst=%d notus=%d nokey=%d noct=%d | errs: toNet=%d toCli=%d",
+		utils.Debugf("[L3-STATS] fromTr=%d(+%d) toNet=%d(+%d) | fromNet=%d(+%d) toCli=%d(+%d) | drops: bad=%d rst=%d notus=%d blocked=%d nokey=%d noct=%d | errs: toNet=%d toCli=%d",
 			fromTr, fromTr-lastFromTr,
 			toNet, toNet-lastToNet,
 			fromNet, fromNet-lastFromNet,
 			toCli, toCli-lastToCli,
-			dropBad, dropRST, dropNotUs, dropNoKey, dropNoCt,
+			dropBad, dropRST, dropNotUs, dropBlk, dropNoKey, dropNoCt,
 			t.sendToNetErrors.Load(), t.sendToClientErrs.Load())
 
 		lastFromTr, lastToNet = fromTr, toNet

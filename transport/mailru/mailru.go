@@ -64,6 +64,9 @@ type MailruDocsTransport struct {
 
 	userCounter atomic.Int32
 	baseUserID  string
+
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 // NewMailruDocsTransport accepts either a bare weblink ("AbCdEfGh1/IjKlMnOp2")
@@ -73,6 +76,7 @@ func NewMailruDocsTransport(weblink string, config transport.TransportConfig) *M
 	t := &MailruDocsTransport{
 		BaseTransport: transport.NewBaseTransport(config),
 		weblink:       normalizeWeblink(weblink),
+		done:          make(chan struct{}),
 	}
 	t.baseUserID = randUserID()
 	return t
@@ -125,6 +129,21 @@ func (t *MailruDocsTransport) Send(data []byte) error {
 	default:
 		return fmt.Errorf("write queue full")
 	}
+}
+
+// Stop tears the transport down: it stops the loops (BaseTransport clears the
+// running flag), signals the writer/keepalive via done, and closes the live
+// WebSocket so the read loop unblocks immediately instead of leaving a "ghost"
+// participant in the document until the next frame.
+func (t *MailruDocsTransport) Stop() error {
+	_ = t.BaseTransport.Stop()
+	t.stopOnce.Do(func() { close(t.done) })
+	t.Mu.Lock()
+	if t.session != nil && t.session.Conn != nil {
+		t.session.Conn.Close()
+	}
+	t.Mu.Unlock()
+	return nil
 }
 
 func (t *MailruDocsTransport) connectToDoc(attempt int) {
@@ -196,6 +215,12 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		}
 
 		t.Mu.Lock()
+		if !t.IsRunning() {
+			// Stop ran while we were dialing and could not see this conn.
+			t.Mu.Unlock()
+			conn.Close()
+			return
+		}
 		t.session = session
 		t.SetConnected(true)
 		t.Mu.Unlock()
@@ -285,7 +310,11 @@ func (t *MailruDocsTransport) writerLoop() {
 		}
 		t.Mu.Unlock()
 		if queue == nil {
-			time.Sleep(5 * time.Millisecond)
+			select {
+			case <-t.done:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
 		}
 	}
 	if queue == nil {
@@ -295,11 +324,15 @@ func (t *MailruDocsTransport) writerLoop() {
 	var pending []byte
 	for t.IsRunning() {
 		if pending == nil {
-			packet, ok := <-queue
-			if !ok {
+			select {
+			case packet, ok := <-queue:
+				if !ok {
+					return
+				}
+				pending = packet
+			case <-t.done:
 				return
 			}
-			pending = packet
 		}
 
 		t.Mu.RLock()
@@ -328,7 +361,11 @@ func (t *MailruDocsTransport) keepAliveLoop() {
 	keepAliveMsg := `42["message",{"type":"cursor","cursor":"18;---KA---"}]`
 
 	for t.IsRunning() {
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-t.done:
+			return
+		}
 		t.Mu.Lock()
 		session := t.session
 		t.Mu.Unlock()

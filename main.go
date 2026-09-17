@@ -21,6 +21,7 @@ import (
 	"openflux/transport/mailru"
 	"openflux/transport/oneme"
 	"openflux/transport/yandex"
+	"openflux/netguard"
 	"openflux/tunnel"
 	"openflux/tunnel/l3"
 	"openflux/utils"
@@ -108,20 +109,33 @@ func main() {
 	mode := flag.String("mode", "", "Exit-node mode: l3 (default, Linux only) or l4 (works everywhere)")
 
 	codec := flag.String("codec", codecBatched, "batched (default, zstd+coalescing) or legacy (per-packet LZ4)")
-	encryptionKeyFile := flag.String("encryption-key-file", "",
-		"Optional: encrypt the transport with AES-256-GCM using a shared secret read from this file. "+
-			"Both peers must use the same secret; unset means unencrypted, unchanged behavior")
+	exitKeyFile := flag.String("exit-key-file", "",
+		"Exit node: X25519 static key file for the encrypted transport, created on first run. "+
+			"The public key is printed at startup for clients")
+	peerKey := flag.String("peer-key", "",
+		"Client: the exit node's public key (from its startup banner). Turns the encrypted transport on")
+	allowPlaintext := flag.Bool("allow-plaintext", false,
+		"Run without encryption. UNSAFE: anyone with access to the document can read the traffic and use the exit node")
+	allowPrivate := flag.Bool("allow-private", false,
+		"Exit: allow reaching private/loopback/link-local networks and cloud metadata (169.254.169.254). Off by default")
+	pskFile := flag.String("psk-file", "",
+		"Optional, both peers: file with a shared secret (16+ characters). The exit node then refuses clients without it")
 
-	flag.StringVar(&globalDocUrl, "url", "http://#", "Document URL. If u use Yandex.Docs transport")
+	flag.StringVar(&globalDocUrl, "url", "http://#",
+		"Document URL. A comma-separated list (yandex, vyandex) runs the tunnel over several documents at once")
+	statusEvery := flag.Duration("multistream-status", 0,
+		"With several --url documents: log per-document state on this interval (e.g. 10s)")
 	flag.StringVar(&maxToken, "maxToken", "", "MAX Web token. If u use MAX transport")
 	flag.StringVar(&maxUid, "maxUid", "", "MAX call user id. If u use MAX transport")
-	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
+	socksAddr := flag.String("socks5", "127.0.0.1:1080", "SOCKS5 listen address (loopback by default; no authentication, so avoid exposing it)")
 	flag.StringVar(&localIP, "local-ip", "", "Egress IP for exit node (l3 mode only, scoped RST drop)")
+	upstreamProxy := flag.String("upstream-proxy", "", "Upstream SOCKS5 proxy for exit node (e.g. 127.0.0.1:10808, socks5://127.0.0.1:10808, or 'direct')")
 
 	panelAddr := flag.String("panel-addr", "127.0.0.1:8088", "--role=exit-panel: bind address for the admin panel")
 	panelUser := flag.String("panel-user", "", "--role=exit-panel: admin panel login username (required)")
 	panelPass := flag.String("panel-pass", "", "--role=exit-panel: admin panel login password (required)")
 	panelData := flag.String("panel-data", "openflux-clients.json", "--role=exit-panel: where registered clients are persisted")
+	panelKeyFile := flag.String("panel-key-file", "openflux-panel.key", "--role=exit-panel: Noise static key file, created on first run. The public key is printed at startup; every client shares it")
 
 	benchBytes := flag.Int("bench-bytes", 0, "Benchmark: push this many MB through the transport, then report and exit")
 	benchCompressible := flag.Bool("bench-compressible", false, "Benchmark: use compressible payload instead of random")
@@ -136,6 +150,7 @@ func main() {
 	depLegacy := flag.Bool("legacy", false, "DEPRECATED: use --codec=legacy")
 	depBenchSend := flag.Int("bench-send", 0, "DEPRECATED: use --role=bench-send --bench-bytes=N")
 	depBenchSink := flag.Bool("bench-sink", false, "DEPRECATED: use --role=bench-sink")
+	depEncryptionKeyFile := flag.String("encryption-key-file", "", "DEPRECATED: use --psk-file with --exit-key-file / --peer-key")
 
 	// Override the default flag.PrintDefaults so -h prints a structured
 	// usage message with axes, modifiers, and examples instead of a flat
@@ -160,31 +175,48 @@ TRANSPORT
   -t, --transport=cupsonline   Cups.online interview rooms.
   -t, --transport=mailru       Mail.ru Docs over WebSocket.
 
-  -u, --url=<URL>              Document URL.
+  -u, --url=<URL>[,<URL>...]   Document URL. Several (yandex, vyandex): multi-stream,
+                               each connection pinned to one document, failover
+                               to the others. Both peers list the same documents.
+      --multistream-status=<d> Log per-document state every <d> (e.g. 10s).
       --maxToken=<token>       MAX auth token (--transport=oneme).
       --maxUid=<uid>           MAX user id   (--transport=oneme).
 
 INBOUND  (only with --role=client)
   -i, --inbound=tun            utun (macOS) / NEPacketTunnel (iOS). Default on macOS.
   -i, --inbound=socks5         SOCKS5 + gVisor. Default on other platforms.
-  -s, --socks5=<addr>          SOCKS5 listen address (default :1080).
+  -s, --socks5=<addr>          SOCKS5 listen address (default 127.0.0.1:1080).
 
 MODE  (only with --role=exit)
   -m, --mode=l3                Packet forwarding (SNAT/DNAT). Default.
   -m, --mode=l4                Stream proxy (TCP termination + re-dial).
   -l, --local-ip=<ip>          Egress IP for SNAT. Auto-detected.
+      --upstream-proxy=<addr>  Upstream SOCKS5 proxy for exit node (forces l4 mode,
+                               e.g. 127.0.0.1:10808, socks5://127.0.0.1:10808, or direct).
+                               Auto-detected from -s/--socks5 if specified with --role=exit.
 
 ADMIN PANEL  (only with --role=exit-panel; always l4, one tunnel per client)
       --panel-addr=<host:port> Bind address. Default 127.0.0.1:8088.
       --panel-user=<user>      Login username (required).
       --panel-pass=<pass>      Login password (required).
       --panel-data=<path>      Where registered clients are persisted (JSON).
+      --panel-key-file=<path>  Noise static key file, created on first run. The
+                               public key is printed at startup; give it to clients.
 
 TRANSPORT MODIFIERS
   -c, --codec=batched          zstd + coalescing. Default.
   -c, --codec=legacy           Per-packet LZ4. A/B only.
-      --encryption-key-file=<path>
-                               AES-256-GCM wrapper. Both peers must share the same key.
+
+ENCRYPTION  (Noise NKpsk0: X25519 + AES-256-GCM, session keys rotate every 2 min)
+      --exit-key-file=<path>   Exit: static key file, created on first run. The public
+                               key is printed at startup; give it to clients.
+      --peer-key=<base64>      Client: the exit node's public key. Turns encryption on.
+      --psk-file=<path>        Both, optional: shared secret (16+ chars). The exit then
+                               refuses clients that do not have it.
+      --allow-plaintext        Run without encryption (unsafe; encryption is required
+                               otherwise).
+      --allow-private          Exit: permit private/loopback/link-local and cloud-metadata
+                               destinations (blocked by default).
 
 BENCHMARK  (only with --role=bench-*)
       --bench-bytes=<MB>       MB to push (bench-send).
@@ -198,6 +230,7 @@ DEPRECATED (removed in v2)
   -tun, -socks5-mode       -> --inbound=tun|socks5
   -legacy                  -> --codec=legacy
   -bench-send, -bench-sink -> --role=bench-send|bench-sink
+  -encryption-key-file     -> --psk-file (plus --exit-key-file / --peer-key)
 `)
 	}
 
@@ -243,6 +276,11 @@ DEPRECATED (removed in v2)
 		log.Printf("warning: -bench-sink is deprecated, use --role=bench-sink")
 		*role = roleBenchSink
 	}
+	if *depEncryptionKeyFile != "" && *pskFile == "" {
+		log.Printf("warning: -encryption-key-file is deprecated, use --psk-file; " +
+			"the encrypted transport now also needs --exit-key-file on the exit node and --peer-key on the client")
+		*pskFile = *depEncryptionKeyFile
+	}
 
 	// Platform defaults. The recommended client path is utun on macOS and
 	// SOCKS5 everywhere else (see README for details).
@@ -255,6 +293,27 @@ DEPRECATED (removed in v2)
 	}
 	if *mode == "" {
 		*mode = "l3"
+	}
+
+	if *role == roleExit && *upstreamProxy == "" {
+		socks5Explicit := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "socks5" {
+				socks5Explicit = true
+			}
+		})
+		if socks5Explicit && *socksAddr != "" {
+			*upstreamProxy = *socksAddr
+		}
+	}
+
+	if *role == roleExit && *upstreamProxy != "" {
+		if *mode == "" || *mode == "l3" {
+			if *mode == "l3" {
+				log.Printf("info: upstream proxy requires l4 mode, switching from l3 to l4")
+			}
+			*mode = "l4"
+		}
 	}
 
 	if *codec != codecBatched && *codec != codecLegacy {
@@ -286,6 +345,11 @@ DEPRECATED (removed in v2)
 		log.Printf("warning: exit on l4 (gVisor). l3 is faster on Linux with root.")
 	}
 
+	netguard.SetAllowPrivate(*allowPrivate)
+	if *allowPrivate && *role == roleExit {
+		log.Printf("WARNING: --allow-private: the exit node may reach private networks and cloud metadata")
+	}
+
 	exitMode, err := tunnel.ParseExitMode(*mode)
 	if err != nil {
 		log.Fatalf("--mode: %v", err)
@@ -305,7 +369,7 @@ DEPRECATED (removed in v2)
 	}
 
 	if *role == roleExitPanel {
-		runExitPanel(*panelAddr, *panelUser, *panelPass, *panelData)
+		runExitPanel(*panelAddr, *panelUser, *panelPass, *panelData, *panelKeyFile)
 		return
 	}
 
@@ -320,57 +384,50 @@ DEPRECATED (removed in v2)
 	}
 
 	config := transport.DefaultConfig()
-	var inner transport.Transport
 
-	switch *transportType {
-	case "vyandex":
-		inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
-	case "yandex":
-		inner = yandex.NewYandexDocsTransport(globalDocUrl, config)
-	case "oneme":
-		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
-		inner = oneme.NewOneMeTransport(*role == roleExit, maxToken, uidint, config)
-	case "cupsonline":
-		inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, *role != roleExit)
-	case "mailru":
-		inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
-	default:
-		log.Fatalf("Unknown transport type: %s", *transportType)
+	// Optional encryption sits directly on the raw transport: the codec above
+	// it batches and compresses plaintext, and one AEAD covers a whole batch.
+	// The client (and bench-send) initiates handshakes, the exit node (and
+	// bench-sink) answers them. Every document stream gets its own session.
+	var psk string
+	if *pskFile != "" {
+		secret, err := readSecretFile(*pskFile)
+		if err != nil {
+			log.Fatalf("--psk-file: %v", err)
+		}
+		psk = secret
+	}
+	initiator := *role == roleClient || *role == roleBenchSend
+	enc, err := newEncryptionSetup(encryptionOptions{
+		ExitKeyFile: *exitKeyFile, PeerKey: *peerKey, PSK: psk, AllowPlaintext: *allowPlaintext,
+	}, initiator)
+	if err != nil {
+		log.Fatalf("Encryption: %v", err)
+	}
+	if enc == nil {
+		log.Printf("WARNING: --allow-plaintext: the tunnel is NOT encrypted or authenticated")
+	} else {
+		log.Printf("Transport encryption: %s", enc.label)
+		fmt.Print(enc.banner)
 	}
 
-	// App-layer codec, outermost. Default is the new batching+zstd layer;
-	// --codec=legacy selects the old per-packet LZ4 path so the two can be
-	// compared over the same channel. Client and exit node must use the same one.
 	switch *codec {
 	case codecBatched:
 		log.Printf("Codec: batched (zstd + coalescing)")
-		inner = transport.NewBatchedTransport(inner)
 	case codecLegacy:
 		log.Printf("Codec: legacy (per-packet LZ4, no batching)")
-		inner = transport.NewCompressedTransport(inner)
 	}
 
-	// Optional AES-256-GCM encryption sits closest to the raw transport, so on
-	// send we batch/compress first and encrypt the result (ciphertext would not
-	// compress). Both peers must use the same secret.
-	if *encryptionKeyFile != "" {
-		secretBytes, err := os.ReadFile(*encryptionKeyFile)
-		if err != nil {
-			log.Fatalf("Read encryption key file: %v", err)
-		}
-		context := *transportType
-		if globalDocUrl != "" {
-			context = globalDocUrl
-		}
-		encrypted, err := transport.NewEncryptedTransport(inner, strings.TrimSpace(string(secretBytes)), context, *role == roleExit)
-		if err != nil {
-			log.Fatalf("Configure encrypted transport: %v", err)
-		}
-		inner = encrypted
-		log.Printf("Transport encryption: AES-256-GCM enabled")
+	urls := splitURLs(globalDocUrl)
+	if len(urls) > 1 && !supportsMultiStream(*transportType) {
+		log.Fatalf("--url: several documents are supported with --transport=yandex or vyandex, not %s", *transportType)
 	}
 
-	trans := inner
+	// Every document gets a complete stream of its own (transport, encryption,
+	// codec), so each carries exactly the single-document wire format.
+	trans := newDocStreams(urls, func(docURL string) transport.Transport {
+		return newStream(*transportType, docURL, *role, *codec, enc, config)
+	})
 
 	// Benchmark modes run the transport directly with no tunnel / raw socket,
 	// so they never touch the host network.
@@ -386,13 +443,13 @@ DEPRECATED (removed in v2)
 		return
 	}
 
-	if err := trans.Start(); err != nil {
-		log.Fatalf("Failed to start transport: %v", err)
+	if ms, ok := trans.(*transport.MultiStreamTransport); ok && *statusEvery > 0 {
+		go multistreamStatusLoop(ms, urls, *statusEvery)
 	}
 
 	switch *role {
 	case roleExit:
-		runExit(trans, exitMode)
+		runExit(trans, exitMode, *upstreamProxy)
 	case roleClient:
 		runClient(trans, *inbound, *socksAddr, exitMode)
 	default:
@@ -400,15 +457,64 @@ DEPRECATED (removed in v2)
 	}
 }
 
-func runExit(trans transport.Transport, exitMode tunnel.ExitMode) {
-	ex, err := tunnel.NewExitNode(trans, exitMode.String())
+// newStream builds the transport stack for one document: the raw transport,
+// optional encryption directly on it, and the app-layer codec outermost.
+func newStream(transportType, docURL, role, codec string, enc *encryptionSetup, config transport.TransportConfig) transport.Transport {
+	var inner transport.Transport
+	switch transportType {
+	case "vyandex":
+		inner = yandex.NewYandexVolgaTransport(docURL, config)
+	case "yandex":
+		inner = yandex.NewYandexDocsTransport(docURL, config)
+	case "oneme":
+		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
+		inner = oneme.NewOneMeTransport(role == roleExit, maxToken, uidint, config)
+	case "cupsonline":
+		inner = cupsonline.NewCupsonlineTransport(docURL, config, role != roleExit)
+	case "mailru":
+		inner = mailru.NewMailruDocsTransport(docURL, config)
+	default:
+		log.Fatalf("Unknown transport type: %s", transportType)
+	}
+
+	// Optional encryption sits on the raw transport, under the codec, so one
+	// AEAD covers a whole compressed batch.
+	if enc != nil {
+		encrypted, err := enc.wrap(inner)
+		if err != nil {
+			log.Fatalf("Configure encrypted transport: %v", err)
+		}
+		inner = encrypted
+	}
+
+	// App-layer codec. Default is the batching+zstd layer; --codec=legacy
+	// selects the old per-packet LZ4 path so the two can be compared over the
+	// same channel. Client and exit node must use the same one.
+	switch codec {
+	case codecBatched:
+		inner = transport.NewBatchedTransport(inner)
+	case codecLegacy:
+		inner = transport.NewCompressedTransport(inner)
+	}
+	return inner
+}
+
+func runExit(trans transport.Transport, exitMode tunnel.ExitMode, upstreamProxy string) {
+	ex, err := tunnel.NewExitNode(trans, exitMode.String(), upstreamProxy)
 	if err != nil {
 		log.Fatalf("exit node: %v", err)
 	}
-	log.Printf("Running as EXIT NODE (mode=%s)", ex.Mode())
+	if upstreamProxy != "" {
+		log.Printf("Running as EXIT NODE with upstream proxy (%s) - mode=%s", upstreamProxy, ex.Mode())
+	} else {
+		log.Printf("Running as EXIT NODE (mode=%s)", ex.Mode())
+	}
+	// The exit node registers its receive callback in Start, so the transport
+	// starts afterwards and no early frame is dropped.
 	if err := ex.Start(); err != nil {
 		log.Fatalf("exit start: %v", err)
 	}
+	startTransport(trans)
 
 	// L3 SNAT rewrites source IPs; the kernel sees return packets for
 	// connections it never opened and emits RST, tearing them down.
@@ -439,9 +545,20 @@ func runExit(trans transport.Transport, exitMode tunnel.ExitMode) {
 // gets its own transport and its own independent L4 tunnel (see
 // exitmgr.Manager), managed live through a local, login-gated web panel
 // instead of one client per CLI invocation.
-func runExitPanel(addr, user, pass, dataPath string) {
+func runExitPanel(addr, user, pass, dataPath, keyFile string) {
+	key, created, err := transport.LoadOrCreateStaticKey(keyFile)
+	if err != nil {
+		log.Fatalf("panel: static key: %v", err)
+	}
+	pub := transport.PublicKeyString(key.Public)
+	state := "loaded from"
+	if created {
+		state = "generated and saved to"
+	}
+	fmt.Printf("\n=== PANEL PUBLIC KEY (%s %s) ===\n%s\nStart clients with --peer-key=%s\n\n", state, keyFile, pub, pub)
+
 	store := exitmgr.NewStore(dataPath)
-	mgr := exitmgr.NewManager(store)
+	mgr := exitmgr.NewManager(store, key)
 	if err := mgr.LoadPersisted(); err != nil {
 		log.Fatalf("panel: load persisted clients: %v", err)
 	}
@@ -474,9 +591,18 @@ func runExitPanel(addr, user, pass, dataPath string) {
 	log.Printf("Shutdown complete")
 }
 
+func startTransport(trans transport.Transport) {
+	if err := trans.Start(); err != nil {
+		log.Fatalf("Failed to start transport: %v", err)
+	}
+}
+
 func runClient(trans transport.Transport, inbound, socksAddr string, exitMode tunnel.ExitMode) {
 	switch inbound {
 	case inboundTUN:
+		// The utun client waits for the transport's sockets before taking the
+		// default route, so the transport has to be up first.
+		startTransport(trans)
 		runClientTUN(trans)
 	case inboundSOCKS5:
 		// Explicit opt-in to the legacy SOCKS5+gVisor client. Kept as a fallback
@@ -486,6 +612,7 @@ func runClient(trans transport.Transport, inbound, socksAddr string, exitMode tu
 		if err != nil {
 			log.Fatalf("tunnel init: %v", err)
 		}
+		startTransport(trans)
 		socks5Server := socks5.NewSOCKS5Server(socksAddr, tun)
 		log.Fatal(socks5Server.Start())
 	default:

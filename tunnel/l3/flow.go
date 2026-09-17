@@ -46,6 +46,27 @@ func rewriteDNAT(pkt []byte, newDst [4]byte) {
 	copy(pkt[16:20], newDst[:])
 }
 
+// isFragmented reports whether pkt is an IPv4 fragment (MF set or non-zero
+// offset). Such packets carry no usable L4 header past the first fragment, so
+// the SNAT path would misread payload bytes as ports and corrupt them; we
+// drop them instead (clients set DF for path-MTU discovery, so this is rare).
+func isFragmented(pkt []byte) bool {
+	if len(pkt) < 8 {
+		return false
+	}
+	flagsFrag := uint16(pkt[6])<<8 | uint16(pkt[7])
+	const mf = 0x2000
+	return flagsFrag&mf != 0 || flagsFrag&0x1fff != 0
+}
+
+func isTCPSyn(pkt []byte) bool {
+	ihl := int(pkt[0]&0x0f) * 4
+	if len(pkt) < ihl+14 {
+		return false
+	}
+	return pkt[ihl+13]&0x02 != 0
+}
+
 func isTCPClosing(pkt []byte) bool {
 	ihl := int(pkt[0]&0x0f) * 4
 	if len(pkt) < ihl+14 {
@@ -59,8 +80,12 @@ func fixChecksums(pkt []byte) {
 	if len(pkt) < 20 || pkt[0]>>4 != 4 {
 		return
 	}
+	ihl0 := int(pkt[0]&0x0f) * 4
+	if ihl0 < 20 || len(pkt) < ihl0 {
+		return
+	}
 	pkt[10], pkt[11] = 0, 0
-	ipSum := onesComplementSum(pkt[:20])
+	ipSum := onesComplementSum(pkt[:ihl0]) // header may carry options (>20 bytes)
 	pkt[10] = byte(ipSum >> 8)
 	pkt[11] = byte(ipSum)
 

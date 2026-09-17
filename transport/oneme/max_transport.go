@@ -1,6 +1,8 @@
 package oneme
 
 import (
+	"fmt"
+
 	"openflux/transport"
 	"openflux/utils"
 )
@@ -35,8 +37,12 @@ func NewOneMeTransport(isExit bool, maxToken string, maxUid int64, config transp
 func (t *OneMeTransport) Start() error {
 	utils.Debugf("creating max client ...")
 	t.oneMeClient = *NewMaxClient()
-	t.oneMeClient.Connect()
-	t.oneMeClient.LoginByToken(t.token)
+	if err := t.oneMeClient.Connect(); err != nil {
+		return fmt.Errorf("max connect: %w", err)
+	}
+	if err := t.oneMeClient.LoginByToken(t.token); err != nil {
+		return fmt.Errorf("max login: %w", err)
+	}
 
 	if t.exit {
 		utils.Debugf("configured ch for exit node")
@@ -48,6 +54,7 @@ func (t *OneMeTransport) Start() error {
 
 	utils.Debugf("configured dc inbound")
 	t.ch.dcInbound = func(data []byte) {
+		t.b.RecordReceive(len(data))
 		t.b.CallReceive(data)
 	}
 
@@ -59,12 +66,14 @@ func (t *OneMeTransport) Stop() error {
 }
 
 func (t *OneMeTransport) IsConnected() bool {
-	return true
+	return t.ch != nil && t.ch.dcReady()
 }
 
 func (t *OneMeTransport) Send(data []byte) error {
+	if t.ch == nil {
+		return fmt.Errorf("not started")
+	}
 	t.ch.Send(data)
+	t.b.RecordSend(len(data))
 	return nil
 }
-
-

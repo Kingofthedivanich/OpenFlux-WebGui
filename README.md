@@ -32,20 +32,41 @@ The original code is provided **as is**, **without any warranties**.
 ## This fork
 
 Fork of [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux)
-(based on `0.0.3`). Changes on top of upstream:
+(based on `0.0.3`), combining this fork's own work with hardening adopted
+from the community fork [danusha2345/OpenFlux](https://github.com/danusha2345/OpenFlux).
+Changes on top of upstream:
 
 - **Multi-client exit node + local web admin panel** (`--role=exit-panel`) —
   run many clients in one process, each on its own Yandex.Docs / Volga / MAX /
   Cups.online / Mail.ru document or room, with a login-gated local web UI to
-  add and remove them live — no restart needed. See
+  add and remove them live — no restart needed. Every client shares the
+  panel's own Noise static identity; a per-client PSK file optionally closes
+  one client to strangers. See
   [Exit node - multi-client admin panel](#exit-node---multi-client-admin-panel).
-- **10 correctness/robustness fixes** on the exit-node path, found via code
-  review and each with a regression test: two remote-triggerable panics that
-  could crash the whole process, a decompression-bomb DoS in the legacy
-  codec, `--local-ip` being silently ignored, a client RST never reaching the
-  real destination server, an unbounded memory leak, silently-swallowed
-  transport send errors, a conntrack lock that blocked all packet forwarding
-  during its periodic sweep, and no graceful shutdown on SIGTERM.
+- **Noise NKpsk0 encryption** (X25519 + AES-256-GCM, rotating session keys)
+  replaces the old static-AES-GCM transport encryption; required by default
+  unless `--allow-plaintext` is passed.
+- **Multi-stream transport** — `--url` takes a comma-separated document list
+  (yandex/vyandex), spreading connections across them with failover to the
+  others if one dies.
+- **`--upstream-proxy`** — the exit node can itself dial out through an
+  upstream SOCKS5 proxy instead of the internet directly.
+- **`netguard`** — an SSRF denylist blocking private/loopback/link-local and
+  cloud-metadata destinations on the exit node by default (`--allow-private`
+  to disable).
+- **~20 correctness/robustness/security fixes** on the exit-node and
+  transport paths, each with a regression test: two remote-triggerable
+  panics, a decompression-bomb DoS, `--local-ip` being silently ignored, a
+  client RST never reaching the real destination, an unbounded memory/goroutine
+  leak on stalled L4 relays, silently-swallowed transport send errors, a
+  conntrack lock that blocked all packet forwarding during its sweep, no
+  graceful shutdown on SIGTERM, a conntrack entry-count cap, half-close on
+  every data path instead of a hard close, SOCKS5 RFC 1928 compliance
+  (IPv6, error replies, exact-length reads), and reconnect/keepalive fixes
+  across the Yandex/Volga/MAX/Mail.ru transports.
+- **iOS bridge not maintained here** — `export_ios.go` builds under
+  `//go:build ios` (inherited from upstream/the community fork) but this
+  fork ships no iOS app or CI job for it.
 - `build_android.sh` is now host-OS aware (macOS/Linux/Windows) and builds
   all three ABIs the [Android app fork](https://github.com/Kingofthedivanich/OpenFluxAndroid)
   ships, instead of just `arm64-v8a` from a macOS host.
@@ -67,6 +88,11 @@ Fork of [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux)
 > **Android app** - [p1neappleXpress/OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid).
 
 ## Architecture
+
+> **Encryption is required by default** (Noise `NKpsk0`): start the exit with
+> `--exit-key-file` and the client with `--peer-key`, or pass `--allow-plaintext`
+> to run an unprotected tunnel. All clients (desktop, iOS, Android) use the
+> **batched** codec and the same wire format.
 
 Any client works with either exit backend. `--mode` is chosen on the **exit
 node**, not on the client.
@@ -152,8 +178,10 @@ the kernel rule above is only needed for kernel-generated RSTs.
 - **iOS packet tunnel** - NEPacketTunnelProvider, pure L3 forwarding.
 - **Legacy codec** - `--codec=legacy` reverts to the old per-packet LZ4 codec
   (compatible with older clients).
-- **Optional encryption** - `--encryption-key-file` wraps the transport in
-  AES-256-GCM. Both peers must share the secret.
+- **Optional encryption** - `--exit-key-file` on the exit node and `--peer-key`
+  on the client run a Noise `NKpsk0` handshake (X25519 + AES-256-GCM) over the
+  channel; session keys rotate every 2 minutes. `--psk-file` on both sides
+  closes the node to clients without the secret.
 - **Benchmark modes** - `--role=bench-send --bench-bytes=N` / `--role=bench-sink`
   measure raw goodput through the transport without touching the host network.
 
@@ -171,6 +199,7 @@ the kernel rule above is only needed for kernel-generated RSTs.
 ```
 OpenFlux/
   main.go                          # CLI entry (client / exit / benches)
+  multistream.go                   # --url list parsing, multi-stream status log
   bench.go                         # Benchmark helpers
   tun_darwin.go                    # macOS utun L3 client
   tun_watch.go                     # Socket watcher for bypass routes
@@ -181,7 +210,11 @@ OpenFlux/
     batched.go                     # BatchedTransport (coalescing + zstd)
     framing.go                     # Wire framing for batched frames
     compressor.go                  # Legacy per-packet LZ4 codec
-    encrypted.go                   # Optional AES-256-GCM wrapper
+    encrypted.go                   # Optional encrypted session layer (Noise NKpsk0)
+    noise_keys.go                  # Exit static key file, peer key parsing, PSK derivation
+    replay.go                      # Anti-replay window for the encrypted layer
+    multistream.go                 # One tunnel over several documents
+    flowhash.go                    # Per-connection hash for multi-stream
     yandex/                        # Yandex.Docs + Volga backends
     oneme/                         # MAX Messenger backend
     cupsonline/                    # Cups.online backend
@@ -258,7 +291,7 @@ macOS, non-root Linux). Slower than `l3` (double TCP termination).
 ./openflux --role=exit-panel \
     --panel-addr=127.0.0.1:8088 \
     --panel-user=admin --panel-pass=CHANGE_ME \
-    --panel-data=./clients.json
+    --panel-data=./clients.json --panel-key-file=./panel.key
 ```
 
 Runs many clients in one process, each with its own transport (its own
@@ -270,6 +303,11 @@ next start. `--panel-addr` should stay bound to `127.0.0.1`; reach it
 remotely over an SSH tunnel (`ssh -L 8088:127.0.0.1:8088 user@host`) rather
 than exposing it directly. `l3` isn't offered here — see the plain `--role=exit`
 above if you need raw SNAT/DNAT.
+
+`--panel-key-file` is the panel's own Noise static key, created on first run
+and printed at startup; every client shares this same identity and connects
+with `--peer-key=<that public key>`. Adding a client in the UI accepts an
+optional PSK file to close just that one client to anyone without the secret.
 
 ### Updating a deployed exit node
 
@@ -328,12 +366,96 @@ format. Client and exit node must both use the same codec (both new, or both
 
 ### Encryption (optional)
 
+The encrypted transport is a Noise `NKpsk0` handshake (X25519, AES-256-GCM,
+SHA-256) between the client and the exit node, carried over the same channel
+as the data. The exit node owns a static key pair; the client only needs its
+public key. Every handshake makes fresh session keys and the client
+re-handshakes every 2 minutes on WireGuard's schedule while the old session
+keeps flowing, so a key that leaks later does not expose recorded traffic.
+Data frames carry a 64-bit counter that is the AEAD nonce and feeds a sliding
+anti-replay window.
+
+**Exit node:** pick a file for the static key. It is created on the first run
+and the public key is printed at startup:
+
 ```
-./openflux ... --encryption-key-file=/path/to/secret.txt
+./openflux --role=exit ... --exit-key-file=/etc/openflux/exit.key
+```
+```
+=== EXIT PUBLIC KEY (generated and saved to /etc/openflux/exit.key) ===
+<base64 key>
+Start clients with --peer-key=<base64 key>
 ```
 
-Both peers must use the same secret file. AES-256-GCM, directional keys.
-Unset means unencrypted, unchanged behavior.
+**Client:** pass that public key:
+
+```
+./openflux --role=client ... --peer-key=<base64 key>
+```
+
+**Closed node (optional):** a shared secret of 16+ characters in a file on
+both sides is mixed into the handshake as a pre-shared key. The exit node then
+silently ignores clients that do not have it:
+
+```
+./openflux --role=exit   ... --exit-key-file=exit.key --psk-file=secret.txt
+./openflux --role=client ... --peer-key=<base64 key> --psk-file=secret.txt
+```
+
+Notes:
+- The encrypted layer sits under the codec: one AEAD covers a whole batch and
+  compression keeps working. Overhead is 33 bytes per batch.
+- One client per document. A second client handshaking on the same document
+  takes it over (without encryption it would corrupt the traffic instead).
+  Give every client its own document.
+- Unset means unencrypted, unchanged behavior. The old `--encryption-key-file`
+  is accepted as an alias of `--psk-file` but no longer turns encryption on by
+  itself, and the v1 wire format is not accepted.
+
+### Multi-stream (several documents)
+
+Pass a comma-separated list to `--url` (`yandex`, `vyandex`) to run one tunnel
+over several documents at once. If one document dies, or the relay stops
+delivering on it, the tunnel keeps working over the others (issue #50).
+
+```
+# exit node
+./openflux --role=exit --mode=l3 \
+    --url="https://disk.yandex.ru/i/AAA,https://disk.yandex.ru/i/BBB" \
+    --multistream-status=10s
+
+# client: the same documents, in any order
+./openflux --role=client \
+    --url="https://disk.yandex.ru/i/BBB,https://disk.yandex.ru/i/AAA" \
+    --multistream-status=10s
+```
+
+How it works:
+
+- Every document is a complete stream of its own (transport, codec,
+  encryption), so each one carries the single-document wire format.
+- Each TCP connection is pinned to one document; different connections spread
+  over the documents. Spreading the packets of one connection over documents
+  would reorder them and collapse its throughput.
+- A document is preferred while the peer's keepalives arrive on it. A
+  disconnected document stops getting traffic immediately; so does one whose
+  participant list shows nobody but us (the peer left). One that is connected
+  but silent for another reason (e.g. the peer landed on another document
+  backend) is dropped after 25s.
+- A connection's packets are sent over the document its packets last arrived
+  on. When one side moves a connection to another document, the other side
+  follows at once instead of sending its ACKs into the lost document.
+- A single URL keeps the exact single-document behavior.
+
+`--multistream-status` logs one line per interval:
+
+```
+[MULTI] connected=2/2 peer=1/2 s0[AAA]=UP(peer=3s,rx=812,tx=790,rc=0) s1[BBB]=NOPEER(peer=41s,rx=15,tx=9,rc=2)
+```
+
+`UP`: connected and the peer was heard from recently; `NOPEER`: connected but
+the peer is silent; `DOWN`: not connected. On iOS, enter the comma-separated
+list in the URL field.
 
 ### Benchmarks
 
@@ -377,16 +499,23 @@ Measure raw goodput through the transport, without touching the host network:
 | `--transport` | `-t` | `yandex` | `yandex` \| `vyandex` \| `oneme` \| `cupsonline` \| `mailru` |
 | `--mode` | `-m` | `l3` | Exit-node mode: `l3` \| `l4` |
 | `--codec` | `-c` | `batched` | `batched` \| `legacy` |
-| `--url` | `-u` | `http://#` | Document URL |
-| `--socks5` | `-s` | `:1080` | SOCKS5 listen address |
+| `--url` | `-u` | `http://#` | Document URL; comma-separated list for multi-stream |
+| `--multistream-status` | | `0` | Log per-document state on this interval (e.g. `10s`) |
+| `--socks5` | `-s` | `127.0.0.1:1080` | SOCKS5 listen address (loopback) |
+| `--upstream-proxy` | | | Upstream SOCKS5 proxy for exit node (forces l4, auto-detected from -s/--socks5) |
 | `--local-ip` | `-l` | (auto) | Egress IP for l3 SNAT / RST filter |
 | `--debug` | `-d` | `false` | Verbose per-packet logging |
-| `--encryption-key-file` | | | AES-256-GCM shared secret file |
+| `--exit-key-file` | | | Exit: static key file for the encrypted transport (created on first run) |
+| `--peer-key` | | | Client: the exit node's public key; turns encryption on |
+| `--psk-file` | | | Both, optional: shared secret file (16+ chars) that closes the node |
+| `--allow-plaintext` | | `false` | Run without encryption (UNSAFE; encryption is required otherwise) |
+| `--allow-private` | | `false` | Exit: allow private/loopback/link-local and cloud-metadata destinations |
 | `--maxToken` | | | MAX auth token (`--transport=oneme`) |
 | `--maxUid` | | | MAX user id (`--transport=oneme`) |
 | `--panel-addr` | | `127.0.0.1:8088` | `--role=exit-panel` bind address |
 | `--panel-user` / `--panel-pass` | | | `--role=exit-panel` admin login (required) |
 | `--panel-data` | | `openflux-clients.json` | `--role=exit-panel` persisted client registry |
+| `--panel-key-file` | | `openflux-panel.key` | `--role=exit-panel` Noise static key, shared by every client |
 | `--bench-bytes` | | `0` | MB to push (`--role=bench-send`) |
 | `--bench-compressible` | | `false` | Use compressible payload (bench) |
 
