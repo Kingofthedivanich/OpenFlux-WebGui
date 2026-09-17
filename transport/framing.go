@@ -17,6 +17,15 @@ import (
 const (
 	batchFormatVersion = 0x02
 	batchFlagZstd      = 0x01
+
+	// maxPacketSize is the largest record a batch may carry: an IPv4 packet
+	// cannot be longer, and the 2-byte length prefix cannot say more.
+	maxPacketSize = 0xFFFF
+	// maxBatchRecords and maxBatchDecoded bound what one frame from the
+	// shared document can make us allocate. Senders stay far below both
+	// (64 packets / 8 KB by default).
+	maxBatchRecords = 1024
+	maxBatchDecoded = 4 << 20
 )
 
 var (
@@ -40,7 +49,7 @@ func init() {
 		zstd.WithDecoderConcurrency(1),
 		// Bound the damage from a malformed/hostile frame injected into the
 		// shared document: cap decompressed memory.
-		zstd.WithDecoderMaxMemory(8<<20),
+		zstd.WithDecoderMaxMemory(maxBatchDecoded),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("zstd decoder init: %v", err))
@@ -108,6 +117,12 @@ func decodeBatch(data []byte) ([][]byte, error) {
 		}
 		n := int(binary.BigEndian.Uint16(framed[:2]))
 		framed = framed[2:]
+		if n == 0 {
+			return nil, fmt.Errorf("empty packet record")
+		}
+		if len(pkts) == maxBatchRecords {
+			return nil, fmt.Errorf("batch has more than %d packets", maxBatchRecords)
+		}
 		if len(framed) < n {
 			return nil, fmt.Errorf("truncated packet: need %d, have %d", n, len(framed))
 		}

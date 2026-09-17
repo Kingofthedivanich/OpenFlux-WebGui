@@ -65,9 +65,14 @@ var (
 	trans   transport.Transport
 
 	// Encryption settings for the next OpenFluxStartClient, set through
-	// OpenFluxSetPeerKey / OpenFluxSetPSK. Empty = plaintext.
+	// OpenFluxSetPeerKey / OpenFluxSetPSK / OpenFluxSetAllowPlaintext.
 	bridgePeerKey string
 	bridgePSK     string
+	// bridgeCfgMu guards the encryption settings above and below; both the
+	// SOCKS and the packet-tunnel bridges read them.
+	bridgeCfgMu sync.Mutex
+	// bridgeAllowPlaintext mirrors --allow-plaintext; off by default.
+	bridgeAllowPlaintext bool
 )
 
 func init() {
@@ -151,7 +156,8 @@ func newBridgeDocStreams(transportType, docURL string, enc *encryptionSetup, con
 }
 
 // newBridgeStream stacks the optional encryption and the codec on a raw
-// transport, in the same order as main.go.
+// transport, in the same order and with the same default codec as main.go,
+// so a phone talks to an exit node started with default flags.
 func newBridgeStream(raw transport.Transport, enc *encryptionSetup) (transport.Transport, error) {
 	if enc != nil {
 		var err error
@@ -159,7 +165,7 @@ func newBridgeStream(raw transport.Transport, enc *encryptionSetup) (transport.T
 			return nil, err
 		}
 	}
-	return transport.NewCompressedTransport(raw), nil
+	return transport.NewBatchedTransport(raw), nil
 }
 
 // OpenFluxStartClient starts the SOCKS5 client tunnel.
@@ -205,7 +211,7 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 
 	// Optional encryption sits on the raw transport, under the codec, the
 	// same way main.go wires it.
-	enc, err := newEncryptionSetup(encryptionOptions{PeerKey: bridgePeerKey, PSK: bridgePSK}, true)
+	enc, err := newEncryptionSetup(bridgeEncryptionOptions(), true)
 	if err != nil {
 		utils.Debugf("[BRIDGE] Encryption: %v", err)
 		return C.int(startBadEncryption)
@@ -231,16 +237,15 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 		return C.int(startBadEncryption)
 	}
 
-	if err := t.Start(); err != nil {
-		utils.Debugf("[BRIDGE] Failed to start transport: %v", err)
-		return C.int(startTransportError)
-	}
-
+	// The tunnel registers its receive callback, then the transport starts.
 	tun, err := tunnel.NewTCPTunnel(t, false)
 	if err != nil {
 		utils.Debugf("[BRIDGE] Failed to init tunnel: %v", err)
-		t.Stop()
 		return C.int(startTunnelError)
+	}
+	if err := t.Start(); err != nil {
+		utils.Debugf("[BRIDGE] Failed to start transport: %v", err)
+		return C.int(startTransportError)
 	}
 	srv := socks5.NewSOCKS5Server(addr, tun)
 	if err := srv.Bind(); err != nil {
@@ -357,12 +362,13 @@ func OpenFluxSetDebug(on C.int) {
 
 // OpenFluxSetPeerKey sets the exit node's public key (base64, from the exit
 // node's startup banner) for the encrypted transport. Call it before
-// OpenFluxStartClient; an empty string turns encryption off.
+// OpenFluxStartClient; without a key the start fails unless
+// OpenFluxSetAllowPlaintext(1) was called.
 //
 //export OpenFluxSetPeerKey
 func OpenFluxSetPeerKey(key *C.char) {
-	stateMu.Lock()
-	defer stateMu.Unlock()
+	bridgeCfgMu.Lock()
+	defer bridgeCfgMu.Unlock()
 	bridgePeerKey = strings.TrimSpace(C.GoString(key))
 }
 
@@ -372,7 +378,25 @@ func OpenFluxSetPeerKey(key *C.char) {
 //
 //export OpenFluxSetPSK
 func OpenFluxSetPSK(secret *C.char) {
-	stateMu.Lock()
-	defer stateMu.Unlock()
+	bridgeCfgMu.Lock()
+	defer bridgeCfgMu.Unlock()
 	bridgePSK = strings.TrimSpace(C.GoString(secret))
+}
+
+// OpenFluxSetAllowPlaintext permits starting without a peer key (on != 0).
+// Unsafe: the tunnel is then neither encrypted nor authenticated. Applies to
+// the next OpenFluxStartClient / OpenFluxStartPacketTunnel.
+//
+//export OpenFluxSetAllowPlaintext
+func OpenFluxSetAllowPlaintext(on C.int) {
+	bridgeCfgMu.Lock()
+	defer bridgeCfgMu.Unlock()
+	bridgeAllowPlaintext = on != 0
+}
+
+// bridgeEncryptionOptions snapshots the encryption settings for a start call.
+func bridgeEncryptionOptions() encryptionOptions {
+	bridgeCfgMu.Lock()
+	defer bridgeCfgMu.Unlock()
+	return encryptionOptions{PeerKey: bridgePeerKey, PSK: bridgePSK, AllowPlaintext: bridgeAllowPlaintext}
 }

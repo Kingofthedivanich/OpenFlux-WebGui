@@ -15,6 +15,10 @@ type encryptionOptions struct {
 	ExitKeyFile string // exit node: its static key file, created on first use
 	PeerKey     string // client: the exit node's public key (base64)
 	PSK         string // both, optional: the shared secret that closes the node to strangers
+	// AllowPlaintext permits running without encryption. Without it a missing
+	// key is an error: a plaintext tunnel lets anyone who can read or write
+	// the document see the traffic and use the exit node as an open proxy.
+	AllowPlaintext bool
 }
 
 // encryptionSetup is a configured encryption layer ready to wrap raw
@@ -25,12 +29,20 @@ type encryptionSetup struct {
 	banner string // exit node only: the public key to hand to clients
 }
 
+// errPlaintextNotAllowed is returned when no encryption option was given and
+// plaintext was not explicitly allowed.
+var errPlaintextNotAllowed = errors.New("encryption is required: use --exit-key-file on the exit node and " +
+	"--peer-key on the client (or --allow-plaintext to run an unprotected tunnel)")
+
 // newEncryptionSetup validates the options for this side and prepares the
-// layer. It returns nil, nil when no encryption option was given. A secret
-// alone is an error rather than silently plaintext: the pre-v2 flag used to
-// enable encryption by itself.
+// layer. It returns nil, nil only when no encryption option was given and
+// plaintext is allowed. A secret alone is an error rather than silently
+// plaintext: the pre-v2 flag used to enable encryption by itself.
 func newEncryptionSetup(opts encryptionOptions, initiator bool) (*encryptionSetup, error) {
 	if opts.ExitKeyFile == "" && opts.PeerKey == "" && opts.PSK == "" {
+		if !opts.AllowPlaintext {
+			return nil, errPlaintextNotAllowed
+		}
 		return nil, nil
 	}
 	cfg := transport.EncryptedConfig{Initiator: initiator}

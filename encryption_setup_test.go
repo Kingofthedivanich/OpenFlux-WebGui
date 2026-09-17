@@ -19,9 +19,17 @@ func (nopTransport) Receive(func([]byte))            {}
 func (nopTransport) IsConnected() bool               { return false }
 func (nopTransport) Stats() transport.TransportStats { return transport.TransportStats{} }
 
-func TestEncryptionSetupOffWithoutFlags(t *testing.T) {
+func TestEncryptionSetupRequiredByDefault(t *testing.T) {
 	for _, initiator := range []bool{true, false} {
-		setup, err := newEncryptionSetup(encryptionOptions{}, initiator)
+		if _, err := newEncryptionSetup(encryptionOptions{}, initiator); err != errPlaintextNotAllowed {
+			t.Fatalf("initiator=%v: err = %v, want errPlaintextNotAllowed", initiator, err)
+		}
+	}
+}
+
+func TestEncryptionSetupOffWhenPlaintextAllowed(t *testing.T) {
+	for _, initiator := range []bool{true, false} {
+		setup, err := newEncryptionSetup(encryptionOptions{AllowPlaintext: true}, initiator)
 		if err != nil {
 			t.Fatal(err)
 		}

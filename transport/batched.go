@@ -48,6 +48,8 @@ type BatchedTransport struct {
 	// return value entirely, so a transport hiccup silently dropped
 	// whole batches with no signal anywhere.
 	sendErrors atomic.Uint64
+
+	decodeWarn *rateLog
 }
 
 // SendErrors returns the number of flushed batches lost to a Send error on
@@ -80,6 +82,7 @@ func NewBatchedTransport(inner Transport) *BatchedTransport {
 		lingerMs:      envInt("OPENFLUX_BATCH_LINGER_MS", defaultLingerMs),
 		maxBatchBytes: envInt("OPENFLUX_BATCH_BYTES", defaultMaxBatchBytes),
 		maxBatchCount: envInt("OPENFLUX_BATCH_COUNT", defaultMaxBatchCount),
+		decodeWarn:    newRateLog(10 * time.Second),
 	}
 }
 
@@ -116,6 +119,12 @@ func (b *BatchedTransport) Stop() error {
 // it for batching. A full queue drops the packet; the tunnel's TCP will
 // retransmit, same as the old "write queue full" behavior.
 func (b *BatchedTransport) Send(data []byte) error {
+	if !b.running.Load() {
+		return fmt.Errorf("batched transport stopped")
+	}
+	if len(data) == 0 || len(data) > maxPacketSize {
+		return fmt.Errorf("packet size %d out of range", len(data))
+	}
 	p := make([]byte, len(data))
 	copy(p, data)
 	select {
@@ -134,7 +143,8 @@ func (b *BatchedTransport) Receive(callback func([]byte)) {
 	b.Transport.Receive(func(data []byte) {
 		pkts, err := decodeBatch(data)
 		if err != nil {
-			utils.Debugf("[BATCH] decode error (%d bytes): %v", len(data), err)
+			b.decodeWarn.Printf("[BATCH] dropped undecodable frame (%d bytes): %v - "+
+				"does the peer use the same --codec and encryption settings?", len(data), err)
 			return
 		}
 		b.mu.RLock()
