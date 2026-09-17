@@ -1,0 +1,104 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + test + iOS type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      # The iOS bridges (//go:build ios, cgo) don't build on Linux; this
+      # type-checks them with a C stub so PRs catch Go-side breakage.
+      - run: ./scripts/ios-typecheck.sh
+
+  cross-build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: linux,   goarch: mipsle }   # common OpenWrt target
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: 386 }
+          - { goos: darwin,  goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -ldflags="-s -w" -trimpath -o "openflux-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openflux-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: openflux-*
+
+  android:
+    name: build android/arm64
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27
+      - name: build
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: ./build_android.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openflux-android-arm64
+          path: output/android/arm64-v8a/openflux
+
+  apple:
+    name: macOS client + iOS static lib
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # macOS utun client (native darwin build).
+      - name: build macOS client
+        env:
+          CGO_ENABLED: "1"
+        run: go build -ldflags="-s -w" -trimpath -o openflux-darwin-arm64 .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openflux-macos-arm64
+          path: openflux-darwin-arm64
+      # iOS static library (liboflux.a). No signing needed; the app archive
+      # (build_ios_app.sh) needs a TEAM_ID secret and is out of scope here.
+      - name: build iOS static library
+        run: ./build_ios.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liboflux-ios-arm64
+          path: output/ios/liboflux.a
