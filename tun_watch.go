@@ -69,6 +69,21 @@ func (w *SocketWatcher) Stop() {
 	}
 	close(w.stop)
 	w.stopped.Wait()
+
+	// The bypass routes added by addRoute() are only meaningful while this
+	// process's tunnel is up; leaving them in place after we stop watching
+	// silently strands a host route through whatever gateway happened to be
+	// current at the time, which breaks reachability to that IP once the
+	// network changes (Wi-Fi <-> hotspot <-> another VPN, etc).
+	w.mu.Lock()
+	known := w.known
+	w.known = make(map[string]bool)
+	w.mu.Unlock()
+	for ip := range known {
+		if err := w.removeRoute(ip); err != nil {
+			utils.Debugf("[WATCH] remove bypass route %s failed: %v", ip, err)
+		}
+	}
 }
 
 func (w *SocketWatcher) snapshot() {
@@ -145,6 +160,17 @@ func (w *SocketWatcher) addRoute(ip string) error {
 		"-gateway", w.gateway).CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "File exists") {
+			return nil
+		}
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (w *SocketWatcher) removeRoute(ip string) error {
+	out, err := exec.Command("sudo", "route", "delete", "-host", ip).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "not in table") {
 			return nil
 		}
 		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))

@@ -9,5 +9,8 @@ import (
 )
 
 func notifySignals(ch chan os.Signal) {
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	// SIGHUP is what a closed terminal window sends the foreground process
+	// (not SIGINT/SIGTERM) - without catching it, closing the window instead
+	// of Ctrl+C skips the bypass-route cleanup in SocketWatcher.Stop() entirely.
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 }
