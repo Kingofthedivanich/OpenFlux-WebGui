@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"openflux/utils"
 )
@@ -102,6 +103,10 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	}()
 	defer clientConn.Close()
 
+	// Bound the handshake so a client that connects and never finishes cannot
+	// pin a goroutine forever (slowloris). Cleared once data forwarding starts.
+	clientConn.SetDeadline(time.Now().Add(10 * time.Second))
+
 	// Greeting: VER NMETHODS METHODS. Fields are read with io.ReadFull to
 	// their exact RFC 1928 lengths: a single Read may return a fragmented
 	// message, and TCP makes no guarantees about message boundaries.
@@ -184,6 +189,8 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	if _, err := clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}); err != nil {
 		return
 	}
+	// Handshake done; the data phase has no deadline of its own.
+	clientConn.SetDeadline(time.Time{})
 
 	var wg sync.WaitGroup
 	wg.Add(2)

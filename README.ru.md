@@ -418,7 +418,7 @@ Start clients with --peer-key=<ключ в base64>
 | `--codec` | `-c` | `batched` | `batched` \| `legacy` |
 | `--url` | `-u` | `http://#` | URL документа; список через запятую для мульти-стрима |
 | `--multistream-status` | | `0` | Логировать состояние документов с этим интервалом (например, `10s`) |
-| `--socks5` | `-s` | `:1080` | Адрес SOCKS5-прокси |
+| `--socks5` | `-s` | `127.0.0.1:1080` | Адрес SOCKS5-прокси (loopback) |
 | `--upstream-proxy` | | | Вышестоящий SOCKS5-прокси для exit node (включает l4, авто-определение из -s/--socks5) |
 | `--local-ip` | `-l` | (авто) | Egress IP для l3 SNAT / фильтра RST |
 | `--debug` | `-d` | `false` | Подробное per-packet логирование |

@@ -111,7 +111,7 @@ func main() {
 		"With several --url documents: log per-document state on this interval (e.g. 10s)")
 	flag.StringVar(&maxToken, "maxToken", "", "MAX Web token. If u use MAX transport")
 	flag.StringVar(&maxUid, "maxUid", "", "MAX call user id. If u use MAX transport")
-	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
+	socksAddr := flag.String("socks5", "127.0.0.1:1080", "SOCKS5 listen address (loopback by default; no authentication, so avoid exposing it)")
 	flag.StringVar(&localIP, "local-ip", "", "Egress IP for exit node (l3 mode only, scoped RST drop)")
 	upstreamProxy := flag.String("upstream-proxy", "", "Upstream SOCKS5 proxy for exit node (e.g. 127.0.0.1:10808, socks5://127.0.0.1:10808, or 'direct')")
 
@@ -162,7 +162,7 @@ TRANSPORT
 INBOUND  (only with --role=client)
   -i, --inbound=tun            utun (macOS) / NEPacketTunnel (iOS). Default on macOS.
   -i, --inbound=socks5         SOCKS5 + gVisor. Default on other platforms.
-  -s, --socks5=<addr>          SOCKS5 listen address (default :1080).
+  -s, --socks5=<addr>          SOCKS5 listen address (default 127.0.0.1:1080).
 
 MODE  (only with --role=exit)
   -m, --mode=l3                Packet forwarding (SNAT/DNAT). Default.

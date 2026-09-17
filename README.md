@@ -413,7 +413,7 @@ Measure raw goodput through the transport, without touching the host network:
 | `--codec` | `-c` | `batched` | `batched` \| `legacy` |
 | `--url` | `-u` | `http://#` | Document URL; comma-separated list for multi-stream |
 | `--multistream-status` | | `0` | Log per-document state on this interval (e.g. `10s`) |
-| `--socks5` | `-s` | `:1080` | SOCKS5 listen address |
+| `--socks5` | `-s` | `127.0.0.1:1080` | SOCKS5 listen address (loopback) |
 | `--upstream-proxy` | | | Upstream SOCKS5 proxy for exit node (forces l4, auto-detected from -s/--socks5) |
 | `--local-ip` | `-l` | (auto) | Egress IP for l3 SNAT / RST filter |
 | `--debug` | `-d` | `false` | Verbose per-packet logging |
