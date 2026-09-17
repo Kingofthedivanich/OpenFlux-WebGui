@@ -72,12 +72,14 @@ func DefaultCupsonlineConfig() CupsonlineConfig {
 		BatchMaxBytes:   32 * 1024,
 		BatchTimeout:    2 * time.Millisecond,
 
-		SendQueueSize: 65536,
+		SendQueueSize: 4096,
 
-		ReadBufferSize:  32 << 20,
-		WriteBufferSize: 32 << 20,
+		// gorilla allocates these per connection; 128 KB is plenty for a
+		// ~43 KB base64 batch and avoids ~256 MB of buffers across rooms.
+		ReadBufferSize:  128 << 10,
+		WriteBufferSize: 128 << 10,
 
-		MaxPayloadBytes: 16_000_000,
+		MaxPayloadBytes: 65535, // one codec frame; the 2-byte prefix cannot say more
 
 		NumRooms:        4,
 		RoomCreatePause: 500 * time.Millisecond,
@@ -119,7 +121,10 @@ func authorize(roomURL string) (*cupsAuth, error) {
 		},
 	}
 
-	req, _ := http.NewRequest("GET", roomURL, nil)
+	req, err := http.NewRequest("GET", roomURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build room request: %w", err)
+	}
 	req.Header.Set("User-Agent", cupsUA)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "ru-RU,ru;q=0.9")
@@ -161,7 +166,10 @@ func authorize(roomURL string) (*cupsAuth, error) {
 	a.channel = fmt.Sprintf("$shared_editor:room-%s", a.roomUUID)
 
 	subBody, _ := json.Marshal(map[string]string{"channel": a.channel})
-	req2, _ := http.NewRequest("POST", a.subURL, bytes.NewReader(subBody))
+	req2, err := http.NewRequest("POST", a.subURL, bytes.NewReader(subBody))
+	if err != nil {
+		return nil, fmt.Errorf("build sub request: %w", err)
+	}
 	req2.Header.Set("User-Agent", cupsUA)
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("X-CSRFToken", a.csrfToken)
@@ -786,8 +794,14 @@ func (t *CupsonlineTransport) Stop() error {
 		close(t.stopCh)
 	}
 	for _, ws := range t.wss {
-		ws.closed.Store(true)
-		close(ws.ctx)
+		if ws.closed.CompareAndSwap(false, true) {
+			close(ws.ctx)
+		}
+		ws.writeMu.Lock()
+		if ws.conn != nil {
+			ws.conn.Close() // unblock the read loop instead of waiting out the 300s deadline
+		}
+		ws.writeMu.Unlock()
 	}
 	t.SetConnected(false)
 	return t.BaseTransport.Stop()

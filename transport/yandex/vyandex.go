@@ -57,13 +57,13 @@ func DefaultVolgaConfig() VolgaConfig {
 		RelayTimeout:        30 * time.Second,
 
 		WorkerCount: 2000,
-		QueueSize:   1000000,
+		QueueSize:   4096,
 
 		BatchSize:     20,
 		BatchTimeout:  2 * time.Millisecond,
 		BatchMaxBytes: 4 * 1024 * 1024,
 
-		MaxPayloadBytes: 5_000_000,
+		MaxPayloadBytes: 65535, // one codec frame; the 2-byte length prefix cannot say more
 		MinPayloadBytes: 200,
 
 		ReconnectMinDelay:   500 * time.Millisecond,
@@ -82,7 +82,7 @@ var reClientConfig = regexp.MustCompile(`<script[^>]*id="client-config"[^>]*>(.*
 
 var (
 	b64BufPool = sync.Pool{
-		New: func() interface{} { return make([]byte, 0, 16*1024*1024) },
+		New: func() interface{} { return make([]byte, 0, 256*1024) },
 	}
 	jsonBufPool = sync.Pool{
 		New: func() interface{} { return bytes.NewBuffer(make([]byte, 0, 128*1024)) },
@@ -442,7 +442,6 @@ type relayClient struct {
 
 	httpClient *http.Client
 	workers    int
-	queue      chan []byte
 	batchQueue chan []byte
 	wg         sync.WaitGroup
 	ctx        context.Context
@@ -477,7 +476,6 @@ func newRelayClient(auth *volgaAuth, cfg VolgaConfig, stats *VolgaStats) *relayC
 			Jar:       auth.Session.Jar,
 		},
 		workers:    cfg.WorkerCount,
-		queue:      make(chan []byte, cfg.QueueSize),
 		batchQueue: make(chan []byte, cfg.QueueSize),
 		ctx:        ctx,
 		cancel:     cancel,
@@ -494,9 +492,10 @@ func (r *relayClient) Start() {
 }
 
 func (r *relayClient) Stop() {
+	// Cancel the context and let the workers drain and exit; do NOT close
+	// batchQueue - a concurrent Send would panic on a closed channel. Stop
+	// is safe to call more than once.
 	r.cancel()
-	close(r.queue)
-	close(r.batchQueue)
 	r.wg.Wait()
 }
 
@@ -514,6 +513,8 @@ func (r *relayClient) Send(data []byte) error {
 	select {
 	case r.batchQueue <- cp:
 		return nil
+	case <-r.ctx.Done():
+		return fmt.Errorf("relay stopped")
 	default:
 		r.stats.QueueDrops.Add(1)
 		return fmt.Errorf("queue full")
