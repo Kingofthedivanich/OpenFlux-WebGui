@@ -103,11 +103,13 @@ func (pt *PacketTunnel) handleTCP(r *tcp.ForwarderRequest) {
 			defer wg.Done()
 			io.Copy(remote, local)
 			halfClose(remote)
+			remote.SetReadDeadline(time.Now().Add(halfCloseLinger))
 		}()
 		go func() {
 			defer wg.Done()
 			io.Copy(local, remote)
 			halfClose(local)
+			local.SetReadDeadline(time.Now().Add(halfCloseLinger))
 		}()
 		wg.Wait()
 		local.Close()
@@ -205,6 +207,10 @@ func (pt *PacketTunnel) Close() {
 	pt.ep.Close()
 	pt.stack.Close()
 }
+
+// halfCloseLinger bounds the direction still open after the other ended, so a
+// peer that never sends FIN cannot pin the flow (goroutine, buffers, endpoint).
+const halfCloseLinger = 120 * time.Second
 
 // halfClose shuts the write side of c if supported, else closes it fully.
 func halfClose(c net.Conn) {

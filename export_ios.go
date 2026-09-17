@@ -72,8 +72,11 @@ var (
 	// bridgeCfgMu guards the encryption settings above and below; both the
 	// SOCKS and the packet-tunnel bridges read them.
 	bridgeCfgMu sync.Mutex
-	// bridgeAllowPlaintext mirrors --allow-plaintext; off by default.
-	bridgeAllowPlaintext bool
+	// bridgeAllowPlaintext mirrors --allow-plaintext. It defaults to ON for the
+	// bridges because the shipped iOS app has no key setting yet: without it
+	// every Start would fail with startBadEncryption. Call
+	// OpenFluxSetAllowPlaintext(0) once the app supplies OpenFluxSetPeerKey.
+	bridgeAllowPlaintext = true
 )
 
 func init() {
@@ -219,6 +222,8 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 	}
 	if enc != nil {
 		utils.Debugf("[BRIDGE] Transport encryption: %s", enc.label)
+	} else {
+		utils.Debugf("[BRIDGE] WARNING: plaintext tunnel (no peer key set)")
 	}
 
 	config := transport.DefaultConfig()
@@ -246,12 +251,14 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 	}
 	if err := t.Start(); err != nil {
 		utils.Debugf("[BRIDGE] Failed to start transport: %v", err)
+		tun.Close()
 		return C.int(startTransportError)
 	}
 	srv := socks5.NewSOCKS5Server(addr, tun)
 	if err := srv.Bind(); err != nil {
 		utils.Debugf("[BRIDGE] Cannot bind %s: %v", addr, err)
 		t.Stop()
+		tun.Close()
 		return C.int(startAddrInUse)
 	}
 

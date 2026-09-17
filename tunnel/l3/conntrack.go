@@ -9,6 +9,10 @@ import (
 const (
 	ctTimeoutEstablished = 60 * time.Minute
 	ctTimeoutClosing     = 15 * time.Second
+	// ctTimeoutUnreplied bounds flows that never saw a packet back from the
+	// internet (SYN to a black hole, scans): they must not hold a slot for
+	// the established timeout, or a SYN burst fills the table for an hour.
+	ctTimeoutUnreplied = 60 * time.Second
 	ctSweepInterval      = 30 * time.Second
 
 	// ctShardCount splits the conntrack table so sweep() only ever holds one
@@ -28,6 +32,7 @@ const (
 type ctEntry struct {
 	lastSeen time.Time
 	dying    bool
+	replied  bool // a packet from the internet side has been seen
 }
 
 type ctShard struct {
@@ -108,6 +113,21 @@ func (c *conntrack) Touch(k flowKey, dying bool) {
 	s.mu.Unlock()
 }
 
+// TouchReplied is Touch for packets arriving from the internet side; it also
+// marks the flow as replied so it graduates from the short unreplied timeout.
+func (c *conntrack) TouchReplied(k flowKey, dying bool) {
+	s := c.shardFor(k)
+	s.mu.Lock()
+	if e, ok := s.entries[k]; ok {
+		e.lastSeen = time.Now()
+		e.replied = true
+		if dying {
+			e.dying = true
+		}
+	}
+	s.mu.Unlock()
+}
+
 func (c *conntrack) Exists(k flowKey) bool {
 	s := c.shardFor(k)
 	s.mu.RLock()
@@ -157,6 +177,9 @@ func (c *conntrack) sweep() {
 		s.mu.Lock()
 		for k, e := range s.entries {
 			timeout := ctTimeoutEstablished
+			if !e.replied {
+				timeout = ctTimeoutUnreplied
+			}
 			if e.dying {
 				timeout = ctTimeoutClosing
 			}
