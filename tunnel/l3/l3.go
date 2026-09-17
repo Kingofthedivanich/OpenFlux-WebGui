@@ -98,7 +98,7 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 		utils.Debugf("[L3] drop: no flow key")
 		return
 	}
-	t.ct.Insert(k)
+	t.ct.Insert(k, isTCPSyn(pkt))
 	if isTCPClosing(pkt) {
 		t.ct.Touch(k, true)
 	}

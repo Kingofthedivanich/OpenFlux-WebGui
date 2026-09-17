@@ -13,10 +13,10 @@ func TestConntrackSweepExpiresEstablishedAndClosingEntries(t *testing.T) {
 	closing := flowKey{srcIP: 2, srcPort: 2}
 	fresh := flowKey{srcIP: 3, srcPort: 3}
 
-	ct.Insert(established)
-	ct.Insert(closing)
+	ct.Insert(established, true)
+	ct.Insert(closing, true)
 	ct.Touch(closing, true)
-	ct.Insert(fresh)
+	ct.Insert(fresh, true)
 
 	// Force established/closing into the past without waiting real minutes.
 	now := time.Now()
@@ -86,7 +86,7 @@ func TestConntrackSweepDoesNotBlockOtherShards(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		ct.Insert(other) // must not touch the locked shard
+		ct.Insert(other, true) // must not touch the locked shard
 		close(done)
 	}()
 
@@ -98,4 +98,30 @@ func TestConntrackSweepDoesNotBlockOtherShards(t *testing.T) {
 		t.Fatal("Insert on an unrelated shard blocked while a different shard's lock was held")
 	}
 	shard.mu.Unlock()
+}
+
+func TestConntrackResetsDyingOnSyn(t *testing.T) {
+	ct := newConntrack()
+	defer ct.Close()
+	k := flowKey{srcIP: 1, dstIP: 2, srcPort: 3, dstPort: 4, proto: 6}
+	ct.Insert(k, true)
+	ct.Touch(k, true) // connection closes -> dying
+	if e, _ := ct.get(k); !e.dying {
+		t.Fatal("expected dying after close")
+	}
+	ct.Insert(k, true) // a new connection reuses the 4-tuple (SYN)
+	if e, _ := ct.get(k); e.dying {
+		t.Fatal("SYN on a reused tuple must clear dying")
+	}
+}
+
+func TestConntrackEntryCap(t *testing.T) {
+	ct := newConntrack()
+	defer ct.Close()
+	for i := 0; i < ctMaxEntries+1000; i++ {
+		ct.Insert(flowKey{srcIP: uint32(i), dstIP: 2, srcPort: 3, dstPort: 4, proto: 6}, true)
+	}
+	if got := ct.count.Load(); got > ctMaxEntries {
+		t.Fatalf("count %d exceeds cap %d", got, ctMaxEntries)
+	}
 }

@@ -46,6 +46,14 @@ func rewriteDNAT(pkt []byte, newDst [4]byte) {
 	copy(pkt[16:20], newDst[:])
 }
 
+func isTCPSyn(pkt []byte) bool {
+	ihl := int(pkt[0]&0x0f) * 4
+	if len(pkt) < ihl+14 {
+		return false
+	}
+	return pkt[ihl+13]&0x02 != 0
+}
+
 func isTCPClosing(pkt []byte) bool {
 	ihl := int(pkt[0]&0x0f) * 4
 	if len(pkt) < ihl+14 {
