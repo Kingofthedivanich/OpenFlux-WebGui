@@ -26,6 +26,10 @@ services:
       MAX_TOKEN: ${MAX_TOKEN:-}
       MAX_UID: ${MAX_UID:-}
       SOCKS5_LISTEN: ${SOCKS5_LISTEN:-:1080}
+      CODEC: ${CODEC:-batched}
+      PEER_KEY: ${PEER_KEY:-}
+      PSK_FILE: ${PSK_FILE:-}
+      ALLOW_PLAINTEXT: ${ALLOW_PLAINTEXT:-0}
       DEBUG: ${DEBUG:-0}
     # No auth on the SOCKS5 server — keep it bound to the host loopback only.
     ports:
@@ -37,12 +41,19 @@ services:
     restart: unless-stopped
     profiles: [exit-node]
     environment:
-      ROLE: exit-node
+      ROLE: exit
       TRANSPORT: ${TRANSPORT:-yandex}
       URL: ${DOC_URL:-}
       MAX_TOKEN: ${MAX_TOKEN:-}
       MAX_UID: ${MAX_UID:-}
       LOCAL_IP: ${EXIT_LOCAL_IP:-}
+      MODE: ${MODE:-l3}
+      CODEC: ${CODEC:-batched}
+      EXIT_KEY_FILE: ${EXIT_KEY_FILE:-}
+      PSK_FILE: ${PSK_FILE:-}
+      UPSTREAM_PROXY: ${UPSTREAM_PROXY:-}
+      ALLOW_PLAINTEXT: ${ALLOW_PLAINTEXT:-0}
+      ALLOW_PRIVATE: ${ALLOW_PRIVATE:-0}
       DEBUG: ${DEBUG:-0}
     cap_add:
       - NET_RAW

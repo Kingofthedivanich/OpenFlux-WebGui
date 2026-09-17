@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -257,7 +258,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		headers.Set("Cookie", info.CookieStr)
 		headers.Set("Host", info.Host)
 
-		utils.Debugf("[YDOCS] WebSocket dial %s", info.WsURL)
+		utils.Debugf("[YDOCS] WebSocket dial %s", maskURL(info.WsURL))
 		conn, resp, err := dialer.DialContext(ctx, info.WsURL, headers)
 		if err != nil {
 			status := 0
@@ -627,7 +628,7 @@ func (t *YandexDocsTransport) fetchDocInfo(ctx context.Context, url, userID stri
 		Timeout: 15 * time.Second,
 	}
 
-	utils.Debugf("[YDOCS] fetchDocInfo GET %s", url)
+	utils.Debugf("[YDOCS] fetchDocInfo GET %s", maskURL(url))
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := client.Do(req)
@@ -638,7 +639,7 @@ func (t *YandexDocsTransport) fetchDocInfo(ctx context.Context, url, userID stri
 
 	htmlBytes, _ := io.ReadAll(resp.Body)
 	html := string(htmlBytes)
-	utils.Debugf("[YDOCS] response status=%d finalURL=%s body=%dB", resp.StatusCode, resp.Request.URL.String(), len(html))
+	utils.Debugf("[YDOCS] response status=%d finalURL=%s body=%dB", resp.StatusCode, maskURL(resp.Request.URL.String()), len(html))
 
 	var cookies []string
 	for _, c := range resp.Cookies() {
@@ -714,6 +715,16 @@ func (t *YandexDocsTransport) fetchDocInfo(ctx context.Context, url, userID stri
 			"lcid":   25,
 		},
 	}, nil
+}
+
+// maskURL keeps scheme+host but hides the path and query, which carry the
+// document key and session tokens (users paste these logs into issues).
+func maskURL(u string) string {
+	parsed, err := neturl.Parse(u)
+	if err != nil {
+		return "<url>"
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/<redacted>"
 }
 
 func randUserID() string {

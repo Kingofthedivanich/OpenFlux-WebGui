@@ -204,7 +204,7 @@ func authorize(docURL string) (*volgaAuth, error) {
 		if len(preview) > 3000 {
 			preview = preview[:3000]
 		}
-		utils.Debugf("[VOLGA] HTML preview: %s", preview)
+		_ = preview // the page may embed access_token; not logged
 		return nil, fmt.Errorf("client-config not found in %s", finalURL)
 	}
 
@@ -287,7 +287,8 @@ func authorize(docURL string) (*volgaAuth, error) {
 		return nil, fmt.Errorf("auth/initial no Location")
 	}
 
-	utils.Debugf("[VOLGA] Location: %s", location[:minInt(len(location), 300)])
+	// Location carries a Bearer token in its query; do not log it verbatim.
+	utils.Debugf("[VOLGA] Location: %s", maskURLQuery(location))
 
 	if strings.Contains(location, "/document/error/") {
 		return nil, fmt.Errorf("auth/initial returned /document/error/ — check access_token_ttl and Referer")
@@ -342,8 +343,9 @@ func authorize(docURL string) (*volgaAuth, error) {
 			a.Token != "", a.RequestPath != "", a.UserIDStr != "", a.Sign != "")
 	}
 
-	utils.Debugf("[VOLGA] auth OK: user=%d(%s) rp=%s sign=%s ts=%s",
-		a.UserID, a.UserIDStr, a.RequestPath, a.Sign, a.TS)
+	// sign/ts/request-path are session credentials; log only lengths.
+	utils.Debugf("[VOLGA] auth OK: user=%d(%s) rp=%dB sign=%dB ts=%dB",
+		a.UserID, a.UserIDStr, len(a.RequestPath), len(a.Sign), len(a.TS))
 	return a, nil
 }
 
@@ -412,6 +414,18 @@ func mapKeys(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// maskURLQuery strips the query string (which can carry tokens) from a URL
+// before logging, keeping only scheme+host+path.
+func maskURLQuery(u string) string {
+	if i := strings.IndexByte(u, '?'); i >= 0 {
+		return u[:i] + "?<redacted>"
+	}
+	if len(u) > 120 {
+		return u[:120]
+	}
+	return u
 }
 
 func minInt(a, b int) int {
