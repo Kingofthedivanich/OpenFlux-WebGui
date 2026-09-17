@@ -15,8 +15,21 @@ var (
 	useICEInjection = true
 )
 
-func (h *CallHandler) SetOnConnected(cb func())    { h.onConnected = cb }
+func (h *CallHandler) SetOnConnected(cb func())     { h.onConnected = cb }
 func (h *CallHandler) SetDCInbound(cb func([]byte)) { h.dcInbound = cb }
+
+// dcReady reports whether the data channel is open (or ICE injection is on),
+// i.e. the transport can actually carry packets.
+func (h *CallHandler) dcReady() bool {
+	if useICEInjection {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.conn != nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.dc != nil
+}
 
 func (h *CallHandler) Send(data []byte) {
 	if useICEInjection {
@@ -423,6 +436,12 @@ func startOutgoingCall(client *MaxClient, calleeID int64) *CallHandler {
 
 	// Connect with auto-reconnect loop
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logError("[CALLER] recovered in call loop: %v", r)
+			}
+		}()
+		backoff := time.Second
 		for {
 			h.mu.Lock()
 			h.callAccepted = false
@@ -437,17 +456,31 @@ func startOutgoingCall(client *MaxClient, calleeID int64) *CallHandler {
 			h.dc = nil
 			h.mu.Unlock()
 
-			resp, _ := client.invoke(78, map[string]interface{}{
+			resp, err := client.invoke(78, map[string]interface{}{
 				"conversationId": genUUID(),
 				"calleeIds":      []int64{calleeID},
 				"internalParams": fmt.Sprintf(`{"deviceId":"%s","sdkVersion":"2.8.9","clientAppKey":"CNHIJPLGDIHBABABA","platform":"WEB","protocolVersion":5,"domainId":"","capabilities":"2A03F"}`, client.deviceID),
 				"isVideo":        false,
 			})
+			if err != nil || resp == nil {
+				logError("[CALLER] start-call failed: %v", err)
+				time.Sleep(backoff)
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
+				continue
+			}
+			backoff = time.Second
 			var payload map[string]interface{}
 			json.Unmarshal(resp.Payload, &payload)
 			paramsStr, _ := payload["internalCallerParams"].(string)
 			var params InternalCallerParams
 			json.Unmarshal([]byte(paramsStr), &params)
+			if params.Endpoint == "" {
+				logError("[CALLER] no call endpoint in response, retrying")
+				time.Sleep(backoff)
+				continue
+			}
 
 			endpoint := params.Endpoint + "&platform=WEB&appVersion=1.1&version=5&device=browser&capabilities=2A03F&clientType=ONE_ME&tgt=start"
 			conn, _, err := websocket.DefaultDialer.Dial(endpoint, nil)

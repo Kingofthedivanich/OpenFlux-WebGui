@@ -71,6 +71,10 @@ func (c *MaxClient) invoke(opcode int, payload map[string]interface{}) (*MaxPack
 	c.pending.Store(seq, ch)
 	defer c.pending.Delete(seq)
 	c.mu.Lock()
+	if c.conn == nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("not connected")
+	}
 	err := c.conn.WriteMessage(websocket.TextMessage, data)
 	c.mu.Unlock()
 	if err != nil {
