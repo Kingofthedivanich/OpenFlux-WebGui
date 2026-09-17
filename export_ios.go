@@ -129,10 +129,43 @@ const (
 	startBadEncryption  = 7 // peer key or PSK from OpenFluxSetPeerKey / OpenFluxSetPSK is unusable
 )
 
+// newBridgeDocStreams builds the iOS client transport for one or several
+// comma-separated documents: one legacy-codec stream per document, combined
+// into a MultiStreamTransport when there is more than one.
+func newBridgeDocStreams(transportType, docURL string, enc *encryptionSetup, config transport.TransportConfig) (transport.Transport, error) {
+	var firstErr error
+	t := newDocStreams(splitURLs(docURL), func(u string) transport.Transport {
+		var raw transport.Transport
+		if transportType == "vyandex" {
+			raw = yandex.NewYandexVolgaTransport(u, config)
+		} else {
+			raw = yandex.NewYandexDocsTransport(u, config)
+		}
+		s, err := newBridgeStream(raw, enc)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return s
+	})
+	return t, firstErr
+}
+
+// newBridgeStream stacks the optional encryption and the codec on a raw
+// transport, in the same order as main.go.
+func newBridgeStream(raw transport.Transport, enc *encryptionSetup) (transport.Transport, error) {
+	if enc != nil {
+		var err error
+		if raw, err = enc.wrap(raw); err != nil {
+			return nil, err
+		}
+	}
+	return transport.NewCompressedTransport(raw), nil
+}
+
 // OpenFluxStartClient starts the SOCKS5 client tunnel.
 //
-// transportType: "yandex" or "oneme".
-// url:           Yandex.Docs document URL (yandex transport).
+// transportType: "yandex", "vyandex", or "oneme".
+// url:           Yandex.Docs document URL(s). Comma-separated for multi-stream.
 // socksAddr:     e.g. "127.0.0.1:1080".
 // maxToken/maxUid: credentials for the "oneme" (MAX) transport; pass "" for yandex.
 //
@@ -170,19 +203,6 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 	}
 	probe.Close()
 
-	config := transport.DefaultConfig()
-	var raw transport.Transport
-	switch tt {
-	case "yandex", "":
-		raw = yandex.NewYandexDocsTransport(docURL, config)
-	case "oneme":
-		uidint, _ := strconv.ParseInt(mUid, 10, 64)
-		raw = oneme.NewOneMeTransport(false, mToken, uidint, config)
-	default:
-		utils.Debugf("[BRIDGE] Unknown transport type: %s", tt)
-		return C.int(startBadTransport)
-	}
-
 	// Optional encryption sits on the raw transport, under the codec, the
 	// same way main.go wires it.
 	enc, err := newEncryptionSetup(encryptionOptions{PeerKey: bridgePeerKey, PSK: bridgePSK}, true)
@@ -191,14 +211,25 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 		return C.int(startBadEncryption)
 	}
 	if enc != nil {
-		raw, err = enc.wrap(raw)
-		if err != nil {
-			utils.Debugf("[BRIDGE] Configure encrypted transport: %v", err)
-			return C.int(startBadEncryption)
-		}
 		utils.Debugf("[BRIDGE] Transport encryption: %s", enc.label)
 	}
-	t := transport.NewCompressedTransport(raw)
+
+	config := transport.DefaultConfig()
+	var t transport.Transport
+	switch tt {
+	case "yandex", "", "vyandex":
+		t, err = newBridgeDocStreams(tt, docURL, enc, config)
+	case "oneme":
+		uidint, _ := strconv.ParseInt(mUid, 10, 64)
+		t, err = newBridgeStream(oneme.NewOneMeTransport(false, mToken, uidint, config), enc)
+	default:
+		utils.Debugf("[BRIDGE] Unknown transport type: %s", tt)
+		return C.int(startBadTransport)
+	}
+	if err != nil {
+		utils.Debugf("[BRIDGE] Configure encrypted transport: %v", err)
+		return C.int(startBadEncryption)
+	}
 
 	if err := t.Start(); err != nil {
 		utils.Debugf("[BRIDGE] Failed to start transport: %v", err)
