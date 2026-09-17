@@ -7,10 +7,30 @@ import (
 	"time"
 )
 
+// pipeDialer's "target" is a real loopback TCP connection, not net.Pipe:
+// net.Pipe's conn has no CloseWrite, so closeWrite() on it falls back to a
+// full Close() that tears down both directions -- racing the still-pending
+// reply write below against whichever goroutine reaches EOF first. A real
+// TCPConn supports CloseWrite like any actual target does, so the relay's
+// half-close behaves the same as in production and the test is deterministic.
 type pipeDialer struct{ server net.Conn }
 
 func (d *pipeDialer) DialTCP(string) (net.Conn, error) {
-	client, server := net.Pipe()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	defer ln.Close()
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		return nil, err
+	}
+	server, err := ln.Accept()
+	if err != nil {
+		client.Close()
+		return nil, err
+	}
 	d.server = server
 	return client, nil
 }
