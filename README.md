@@ -47,6 +47,11 @@ The original code is provided **as is**, **without any warranties**.
 
 ## Architecture
 
+> **Encryption is required by default** (Noise `NKpsk0`): start the exit with
+> `--exit-key-file` and the client with `--peer-key`, or pass `--allow-plaintext`
+> to run an unprotected tunnel. All clients (desktop, iOS, Android) use the
+> **batched** codec and the same wire format.
+
 Any client works with either exit backend. `--mode` is chosen on the **exit
 node**, not on the client.
 
@@ -420,6 +425,8 @@ Measure raw goodput through the transport, without touching the host network:
 | `--exit-key-file` | | | Exit: static key file for the encrypted transport (created on first run) |
 | `--peer-key` | | | Client: the exit node's public key; turns encryption on |
 | `--psk-file` | | | Both, optional: shared secret file (16+ chars) that closes the node |
+| `--allow-plaintext` | | `false` | Run without encryption (UNSAFE; encryption is required otherwise) |
+| `--allow-private` | | `false` | Exit: allow private/loopback/link-local and cloud-metadata destinations |
 | `--maxToken` | | | MAX auth token (`--transport=oneme`) |
 | `--maxUid` | | | MAX user id (`--transport=oneme`) |
 | `--bench-bytes` | | `0` | MB to push (`--role=bench-send`) |

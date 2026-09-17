@@ -60,5 +60,5 @@ a/
 stats.txt
 watch_stats.sh
 *.log
-openflux
+/openflux
 *.bak
