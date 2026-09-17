@@ -32,6 +32,7 @@ type L3Exit struct {
 	dropNoConntrack  atomic.Uint64
 	dropNotForUs     atomic.Uint64
 	dropBlocked      atomic.Uint64
+	dropFrag         atomic.Uint64
 	sendToNetErrors  atomic.Uint64
 	sendToClientErrs atomic.Uint64
 }
@@ -125,6 +126,11 @@ func (t *L3Exit) handleFromInternet(pkt []byte) {
 		return
 	}
 	pkt = sl
+
+	if isFragmented(pkt) {
+		t.dropFrag.Add(1)
+		return
+	}
 
 	// Only handle packets addressed to OUR egress IP. SOCK_RAW on Linux
 	// sees every TCP packet on the wire, including unrelated SSH sessions
