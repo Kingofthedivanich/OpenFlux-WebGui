@@ -2,11 +2,12 @@ package l3
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	ctTimeoutEstablished = 5 * time.Minute
+	ctTimeoutEstablished = 60 * time.Minute
 	ctTimeoutClosing     = 15 * time.Second
 	ctSweepInterval      = 30 * time.Second
 
@@ -15,6 +16,13 @@ const (
 	// lock across a full-table scan, blocking every Insert/Touch/Exists call
 	// on the packet-forwarding hot path for the whole scan duration.
 	ctShardCount = 32
+
+	// ctMaxEntries caps total tracked flows so a flood of SYNs from a
+	// malicious client (one entry per spoofed 4-tuple, held for the idle
+	// timeout) cannot exhaust memory. Past the cap, new flows are refused;
+	// their return packets are then dropped (noct) instead of the exit
+	// running out of memory. ~200k entries is a few tens of MB.
+	ctMaxEntries = 200000
 )
 
 type ctEntry struct {
@@ -29,6 +37,7 @@ type ctShard struct {
 
 type conntrack struct {
 	shards  [ctShardCount]*ctShard
+	count   atomic.Int64
 	stop    chan struct{}
 	stopped sync.Once
 }
@@ -62,15 +71,28 @@ func (c *conntrack) shardFor(k flowKey) *ctShard {
 	return c.shards[shardIndex(k)]
 }
 
-func (c *conntrack) Insert(k flowKey) {
+// Insert records or refreshes the flow for an outbound packet. syn marks a
+// TCP SYN, which starts a new connection: it clears any leftover dying flag
+// from a previous connection that reused the same 4-tuple (otherwise the new
+// flow would inherit the 15s closing timeout and be swept mid-transfer).
+func (c *conntrack) Insert(k flowKey, syn bool) {
 	s := c.shardFor(k)
 	now := time.Now()
 	s.mu.Lock()
 	if e, ok := s.entries[k]; ok {
 		e.lastSeen = now
-	} else {
-		s.entries[k] = &ctEntry{lastSeen: now}
+		if syn {
+			e.dying = false
+		}
+		s.mu.Unlock()
+		return
 	}
+	if c.count.Load() >= ctMaxEntries {
+		s.mu.Unlock()
+		return // table full: refuse the new flow rather than exhaust memory
+	}
+	s.entries[k] = &ctEntry{lastSeen: now}
+	c.count.Add(1)
 	s.mu.Unlock()
 }
 
@@ -140,6 +162,7 @@ func (c *conntrack) sweep() {
 			}
 			if now.Sub(e.lastSeen) > timeout {
 				delete(s.entries, k)
+				c.count.Add(-1)
 			}
 		}
 		s.mu.Unlock()
