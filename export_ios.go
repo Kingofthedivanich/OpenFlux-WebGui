@@ -59,10 +59,11 @@ var logbuf = &ringLog{}
 // ---- running client state ----
 
 var (
-	stateMu sync.Mutex
-	running bool
-	socks   *socks5.SOCKS5Server
-	trans   transport.Transport
+	stateMu      sync.Mutex
+	running      bool
+	socks        *socks5.SOCKS5Server
+	trans        transport.Transport
+	clientTunnel *tunnel.TCPTunnel
 
 	// Encryption settings for the next OpenFluxStartClient, set through
 	// OpenFluxSetPeerKey / OpenFluxSetPSK / OpenFluxSetAllowPlaintext.
@@ -256,6 +257,7 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 
 	trans = t
 	socks = srv
+	clientTunnel = tun
 	running = true
 
 	go func() {
@@ -288,8 +290,12 @@ func OpenFluxStop() {
 	if trans != nil {
 		trans.Stop()
 	}
+	if clientTunnel != nil {
+		clientTunnel.Close()
+	}
 	socks = nil
 	trans = nil
+	clientTunnel = nil
 	running = false
 	utils.Debugf("[BRIDGE] Stopped")
 }

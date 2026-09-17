@@ -64,6 +64,9 @@ func (t *L3Exit) Start() error {
 }
 
 func (t *L3Exit) Stop() error {
+	// Detach from the transport first so no packet is forwarded to a closed
+	// (or reused) raw socket after Close.
+	t.trans.Receive(func([]byte) {})
 	t.ct.Close()
 	return t.backend.Close()
 }

@@ -27,4 +27,9 @@ func (p *proxyExit) Start() error {
 	return nil
 }
 
-func (p *proxyExit) Stop() error { return nil }
+func (p *proxyExit) Stop() error {
+	if p.tun != nil {
+		return p.tun.Close()
+	}
+	return nil
+}

@@ -90,6 +90,8 @@ type TCPTunnel struct {
 	dialer        proxy.Dialer
 	startTime     time.Time
 	packetCount   atomic.Uint64
+	closed        chan struct{}
+	closeOnce     sync.Once
 }
 
 // TCP buffer size range for gvisor stacks.
@@ -173,6 +175,7 @@ func NewTCPTunnelModeWithProxy(trans transport.Transport, isExitNode bool, mode 
 		tunnelEP.InjectInbound(data)
 	})
 
+	t.closed = make(chan struct{})
 	utils.SafeGo("tunnel.printStats", t.printStats)
 	return t, nil
 }
@@ -355,7 +358,12 @@ func (t *TCPTunnel) printStats() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-t.closed:
+			return
+		case <-ticker.C:
+		}
 		stats := t.gvisorStack.Stats()
 		utils.Debugf("[STATS] uptime=%v mode=%s packets=%d connected=%d established=%d retrans=%d",
 			time.Since(t.startTime).Round(time.Second),
@@ -368,3 +376,17 @@ func (t *TCPTunnel) printStats() {
 	}
 }
 
+
+// Close releases the gVisor stack and stops the stats goroutine. Safe to call
+// more than once.
+func (t *TCPTunnel) Close() error {
+	t.closeOnce.Do(func() {
+		if t.closed != nil {
+			close(t.closed)
+		}
+		if t.gvisorStack != nil {
+			t.gvisorStack.Close()
+		}
+	})
+	return nil
+}
