@@ -745,11 +745,18 @@ func (w *wsListener) run() {
 		default:
 		}
 
+		connStart := time.Now()
 		if err := w.connect(); err != nil {
 			utils.Debugf("[VOLGA] WS error: %v", err)
 		}
 		if w.ctx.Err() != nil {
 			return
+		}
+		// A session that stayed up a while is a healthy reconnect, not a
+		// failing one: reset the backoff so a long-lived link that finally
+		// drops doesn't wait out the full 30s.
+		if time.Since(connStart) > 30*time.Second {
+			delay = w.config.ReconnectMinDelay
 		}
 
 		w.stats.WSReconnects.Add(1)
@@ -913,6 +920,13 @@ func (w *wsListener) handleBundleItem(raw json.RawMessage) {
 		w.stats.PacketsRecv.Add(uint64(len(packets)))
 		w.stats.BytesReceived.Add(uint64(len(decoded)))
 		for _, pkt := range packets {
+			// Drop the relay-level keepalive (a bare {0x00} the peer posts
+			// every KeepAliveInterval to keep the HTTP channel warm); it is
+			// not a tunnel packet and would otherwise reach the codec as an
+			// undecodable 1-byte frame.
+			if len(pkt) <= 1 {
+				continue
+			}
 			if w.onData != nil {
 				w.onData(pkt)
 			}
