@@ -100,7 +100,10 @@ func main() {
 	pskFile := flag.String("psk-file", "",
 		"Optional, both peers: file with a shared secret (16+ characters). The exit node then refuses clients without it")
 
-	flag.StringVar(&globalDocUrl, "url", "http://#", "Document URL. If u use Yandex.Docs transport")
+	flag.StringVar(&globalDocUrl, "url", "http://#",
+		"Document URL. A comma-separated list (yandex, vyandex) runs the tunnel over several documents at once")
+	statusEvery := flag.Duration("multistream-status", 0,
+		"With several --url documents: log per-document state on this interval (e.g. 10s)")
 	flag.StringVar(&maxToken, "maxToken", "", "MAX Web token. If u use MAX transport")
 	flag.StringVar(&maxUid, "maxUid", "", "MAX call user id. If u use MAX transport")
 	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
@@ -143,7 +146,10 @@ TRANSPORT
   -t, --transport=cupsonline   Cups.online interview rooms.
   -t, --transport=mailru       Mail.ru Docs over WebSocket.
 
-  -u, --url=<URL>              Document URL.
+  -u, --url=<URL>[,<URL>...]   Document URL. Several (yandex, vyandex): multi-stream,
+                               each connection pinned to one document, failover
+                               to the others. Both peers list the same documents.
+      --multistream-status=<d> Log per-document state every <d> (e.g. 10s).
       --maxToken=<token>       MAX auth token (--transport=oneme).
       --maxUid=<uid>           MAX user id   (--transport=oneme).
 
@@ -299,28 +305,11 @@ DEPRECATED (removed in v2)
 	}
 
 	config := transport.DefaultConfig()
-	var inner transport.Transport
-
-	switch *transportType {
-	case "vyandex":
-		inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
-	case "yandex":
-		inner = yandex.NewYandexDocsTransport(globalDocUrl, config)
-	case "oneme":
-		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
-		inner = oneme.NewOneMeTransport(*role == roleExit, maxToken, uidint, config)
-	case "cupsonline":
-		inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, *role != roleExit)
-	case "mailru":
-		inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
-	default:
-		log.Fatalf("Unknown transport type: %s", *transportType)
-	}
 
 	// Optional encryption sits directly on the raw transport: the codec above
 	// it batches and compresses plaintext, and one AEAD covers a whole batch.
 	// The client (and bench-send) initiates handshakes, the exit node (and
-	// bench-sink) answers them.
+	// bench-sink) answers them. Every document stream gets its own session.
 	var psk string
 	if *pskFile != "" {
 		secret, err := readSecretFile(*pskFile)
@@ -335,28 +324,27 @@ DEPRECATED (removed in v2)
 		log.Fatalf("Encryption: %v", err)
 	}
 	if enc != nil {
-		encrypted, err := enc.wrap(inner)
-		if err != nil {
-			log.Fatalf("Configure encrypted transport: %v", err)
-		}
-		inner = encrypted
 		log.Printf("Transport encryption: %s", enc.label)
 		fmt.Print(enc.banner)
 	}
 
-	// App-layer codec, outermost. Default is the new batching+zstd layer;
-	// --codec=legacy selects the old per-packet LZ4 path so the two can be
-	// compared over the same channel. Client and exit node must use the same one.
 	switch *codec {
 	case codecBatched:
 		log.Printf("Codec: batched (zstd + coalescing)")
-		inner = transport.NewBatchedTransport(inner)
 	case codecLegacy:
 		log.Printf("Codec: legacy (per-packet LZ4, no batching)")
-		inner = transport.NewCompressedTransport(inner)
 	}
 
-	trans := inner
+	urls := splitURLs(globalDocUrl)
+	if len(urls) > 1 && !supportsMultiStream(*transportType) {
+		log.Fatalf("--url: several documents are supported with --transport=yandex or vyandex, not %s", *transportType)
+	}
+
+	// Every document gets a complete stream of its own (transport, encryption,
+	// codec), so each carries exactly the single-document wire format.
+	trans := newDocStreams(urls, func(docURL string) transport.Transport {
+		return newStream(*transportType, docURL, *role, *codec, enc, config)
+	})
 
 	// Benchmark modes run the transport directly with no tunnel / raw socket,
 	// so they never touch the host network.
@@ -375,6 +363,9 @@ DEPRECATED (removed in v2)
 	if err := trans.Start(); err != nil {
 		log.Fatalf("Failed to start transport: %v", err)
 	}
+	if ms, ok := trans.(*transport.MultiStreamTransport); ok && *statusEvery > 0 {
+		go multistreamStatusLoop(ms, urls, *statusEvery)
+	}
 
 	switch *role {
 	case roleExit:
@@ -384,6 +375,48 @@ DEPRECATED (removed in v2)
 	default:
 		log.Fatalf("unhandled role %q", *role)
 	}
+}
+
+// newStream builds the transport stack for one document: the raw transport,
+// the app-layer codec on top of it, and optional encryption outermost.
+func newStream(transportType, docURL, role, codec string, enc *encryptionSetup, config transport.TransportConfig) transport.Transport {
+	var inner transport.Transport
+	switch transportType {
+	case "vyandex":
+		inner = yandex.NewYandexVolgaTransport(docURL, config)
+	case "yandex":
+		inner = yandex.NewYandexDocsTransport(docURL, config)
+	case "oneme":
+		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
+		inner = oneme.NewOneMeTransport(role == roleExit, maxToken, uidint, config)
+	case "cupsonline":
+		inner = cupsonline.NewCupsonlineTransport(docURL, config, role != roleExit)
+	case "mailru":
+		inner = mailru.NewMailruDocsTransport(docURL, config)
+	default:
+		log.Fatalf("Unknown transport type: %s", transportType)
+	}
+
+	// Optional encryption sits on the raw transport, under the codec, so one
+	// AEAD covers a whole compressed batch.
+	if enc != nil {
+		encrypted, err := enc.wrap(inner)
+		if err != nil {
+			log.Fatalf("Configure encrypted transport: %v", err)
+		}
+		inner = encrypted
+	}
+
+	// App-layer codec. Default is the batching+zstd layer; --codec=legacy
+	// selects the old per-packet LZ4 path so the two can be compared over the
+	// same channel. Client and exit node must use the same one.
+	switch codec {
+	case codecBatched:
+		inner = transport.NewBatchedTransport(inner)
+	case codecLegacy:
+		inner = transport.NewCompressedTransport(inner)
+	}
+	return inner
 }
 
 func runExit(trans transport.Transport, exitMode tunnel.ExitMode) {
