@@ -94,3 +94,64 @@ func TestBuildTransportCupsonlineIsReachableByUnwrapCupsonline(t *testing.T) {
 	// unwrapped value is live (a nil pointer would panic here).
 	_ = cups.RoomsPacked()
 }
+
+func TestBuildTransportSingleURLDoesNotWrapInMultiStream(t *testing.T) {
+	key, err := transport.GenerateStaticKey()
+	if err != nil {
+		t.Fatalf("generate static key: %v", err)
+	}
+	cfg := ClientConfig{ID: "c1", Transport: "yandex", URL: "https://disk.yandex.com/i/one"}
+	trans, err := BuildTransport(cfg, transport.DefaultConfig(), key)
+	if err != nil {
+		t.Fatalf("BuildTransport: %v", err)
+	}
+	if _, ok := trans.(*transport.MultiStreamTransport); ok {
+		t.Fatal("a single URL must not be wrapped in MultiStreamTransport (breaks the single-document wire format)")
+	}
+}
+
+func TestBuildTransportMultipleURLsWrapInMultiStream(t *testing.T) {
+	key, err := transport.GenerateStaticKey()
+	if err != nil {
+		t.Fatalf("generate static key: %v", err)
+	}
+	cfg := ClientConfig{
+		ID:        "c1",
+		Transport: "yandex",
+		URL:       "https://disk.yandex.com/i/b, https://disk.yandex.com/i/a",
+	}
+	trans, err := BuildTransport(cfg, transport.DefaultConfig(), key)
+	if err != nil {
+		t.Fatalf("BuildTransport: %v", err)
+	}
+	ms, ok := trans.(*transport.MultiStreamTransport)
+	if !ok {
+		t.Fatalf("outermost transport is %T, want *transport.MultiStreamTransport", trans)
+	}
+	streams := ms.Streams()
+	if len(streams) != 2 {
+		t.Fatalf("got %d streams, want 2", len(streams))
+	}
+	// Each stream must itself be a complete codec(encryption(raw)) stack,
+	// the same as the single-document case -- not the raw backend directly.
+	for i, s := range streams {
+		batched, ok := s.(*transport.BatchedTransport)
+		if !ok {
+			t.Fatalf("stream %d is %T, want *transport.BatchedTransport", i, s)
+		}
+		if _, ok := batched.Transport.(*transport.EncryptedTransport); !ok {
+			t.Fatalf("stream %d: codec wraps %T, want *transport.EncryptedTransport", i, batched.Transport)
+		}
+	}
+}
+
+func TestBuildTransportRejectsMultiStreamForUnsupportedTransport(t *testing.T) {
+	key, err := transport.GenerateStaticKey()
+	if err != nil {
+		t.Fatalf("generate static key: %v", err)
+	}
+	cfg := ClientConfig{ID: "c1", Transport: "mailru", URL: "https://cloud.mail.ru/public/a,https://cloud.mail.ru/public/b"}
+	if _, err := BuildTransport(cfg, transport.DefaultConfig(), key); err == nil {
+		t.Fatal("expected an error requesting multi-stream on a transport that doesn't support it")
+	}
+}
