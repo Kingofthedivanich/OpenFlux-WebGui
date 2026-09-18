@@ -16,7 +16,7 @@ import (
 )
 
 // BuildTransport constructs the full transport stack for one client
-// (backend -> codec -> encryption), mirroring main.go's single-client
+// (backend -> encryption -> codec), mirroring main.go's single-client
 // wiring so a client added through the panel behaves identically to one
 // started via CLI flags. Every client shares the panel's own static key
 // (staticKey, loaded once by runExitPanel); cfg.PSKFile optionally closes
@@ -46,12 +46,6 @@ func BuildTransport(cfg ClientConfig, base transport.TransportConfig, staticKey 
 		return nil, fmt.Errorf("unknown transport %q", cfg.Transport)
 	}
 
-	if cfg.Codec == "legacy" {
-		inner = transport.NewCompressedTransport(inner)
-	} else {
-		inner = transport.NewBatchedTransport(inner)
-	}
-
 	var psk []byte
 	if cfg.PSKFile != "" {
 		secretBytes, err := os.ReadFile(cfg.PSKFile)
@@ -64,6 +58,10 @@ func BuildTransport(cfg ClientConfig, base transport.TransportConfig, staticKey 
 		}
 	}
 
+	// Encryption sits directly on the raw transport, under the codec, the
+	// same way main.go wires it: one AEAD covers a whole compressed batch,
+	// and the codec's batching means the peer sees one Noise frame per
+	// flushed batch instead of one per IP packet.
 	enc, err := transport.NewEncryptedTransport(inner, transport.EncryptedConfig{
 		Initiator: false,
 		StaticKey: staticKey,
@@ -72,6 +70,13 @@ func BuildTransport(cfg ClientConfig, base transport.TransportConfig, staticKey 
 	if err != nil {
 		return nil, fmt.Errorf("configure encryption: %w", err)
 	}
+	inner = enc
 
-	return enc, nil
+	if cfg.Codec == "legacy" {
+		inner = transport.NewCompressedTransport(inner)
+	} else {
+		inner = transport.NewBatchedTransport(inner)
+	}
+
+	return inner, nil
 }
