@@ -27,7 +27,7 @@ func stubBuilder(exitmgr.ClientConfig, transport.TransportConfig) (transport.Tra
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	mgr := exitmgr.NewManagerWithBuilder(nil, stubBuilder)
-	return NewServer(mgr, "admin", "s3cret")
+	return NewServer(mgr, "admin", "s3cret", "fake-panel-public-key")
 }
 
 func do(t *testing.T, srv *Server, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -153,5 +153,68 @@ func TestAddClientRejectsInvalidConfig(t *testing.T) {
 	w := do(t, srv, "POST", "/api/clients", exitmgr.ClientConfig{Name: "no transport"}, cookie)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestPanelKeyRequiresAuthAndReturnsTheConfiguredKey(t *testing.T) {
+	srv := newTestServer(t)
+
+	w := do(t, srv, "GET", "/api/panel-key", nil, nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status without auth = %d, want 401", w.Code)
+	}
+
+	cookie := login(t, srv, "admin", "s3cret")
+	w = do(t, srv, "GET", "/api/panel-key", nil, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["public_key"] != "fake-panel-public-key" {
+		t.Fatalf("public_key = %q, want %q", body["public_key"], "fake-panel-public-key")
+	}
+}
+
+func TestUpdateClientOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	cookie := login(t, srv, "admin", "s3cret")
+
+	addBody := exitmgr.ClientConfig{Name: "before", Transport: "yandex", URL: "https://disk.yandex.com/i/x"}
+	w := do(t, srv, "POST", "/api/clients", addBody, cookie)
+	var added map[string]string
+	json.Unmarshal(w.Body.Bytes(), &added)
+	id := added["id"]
+
+	updateBody := exitmgr.ClientConfig{Name: "after", Transport: "yandex", URL: "https://disk.yandex.com/i/y"}
+	w = do(t, srv, "PUT", "/api/clients/"+id, updateBody, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	w = do(t, srv, "GET", "/api/clients", nil, cookie)
+	var list []exitmgr.ClientStatus
+	json.Unmarshal(w.Body.Bytes(), &list)
+	if len(list) != 1 || list[0].Config.Name != "after" || list[0].Config.URL != "https://disk.yandex.com/i/y" {
+		t.Fatalf("list = %+v, want one client updated to name=after url=.../y", list)
+	}
+}
+
+func TestUpdateClientRequiresAuth(t *testing.T) {
+	srv := newTestServer(t)
+	w := do(t, srv, "PUT", "/api/clients/x", exitmgr.ClientConfig{Name: "x"}, nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestUpdateClientMissingReturnsNotFound(t *testing.T) {
+	srv := newTestServer(t)
+	cookie := login(t, srv, "admin", "s3cret")
+
+	body := exitmgr.ClientConfig{Name: "x", Transport: "yandex", URL: "https://x"}
+	w := do(t, srv, "PUT", "/api/clients/does-not-exist", body, cookie)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", w.Code, w.Body.String())
 	}
 }

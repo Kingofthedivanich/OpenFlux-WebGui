@@ -77,6 +77,7 @@ button.primary { background: var(--accent-dim); color: var(--text); }
 button.primary:hover { background: var(--accent); }
 button.ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
 button.ghost:hover { color: var(--text); border-color: var(--text-muted); }
+button.small { padding: 6px 10px; font-size: 12px; border-radius: 10px; }
 
 .error-text { color: var(--danger); font-size: 13px; min-height: 0; }
 
@@ -92,6 +93,28 @@ header {
 .header-actions { display: flex; gap: 10px; }
 
 main { padding: 24px 28px; max-width: 900px; margin: 0 auto; }
+
+.panel-key-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+}
+.panel-key-label { color: var(--text-muted); font-size: 12px; margin-bottom: 8px; }
+.panel-key-row { display: flex; align-items: center; gap: 10px; }
+.panel-key-row code {
+  flex: 1;
+  min-width: 0;
+  background: #0d1119;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  overflow-x: auto;
+  white-space: nowrap;
+  color: var(--text);
+}
 
 .empty-state {
   color: var(--text-muted);
@@ -120,6 +143,15 @@ main { padding: 24px 28px; max-width: 900px; margin: 0 auto; }
 .client-meta { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
 .client-error { color: var(--danger); font-size: 12px; margin-top: 4px; word-break: break-word; }
 .client-stats { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+
+.psk-badge {
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--ok);
+  font-size: 11px;
+}
+
+.client-actions { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
 
 .remove-btn {
   background: transparent;

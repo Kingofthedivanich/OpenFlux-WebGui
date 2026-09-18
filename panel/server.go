@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"openflux/exitmgr"
 )
@@ -23,20 +24,26 @@ const sessionCookieName = "openflux_session"
 // http.ListenAndServe (or similar) yourself -- Server does not own the
 // listener, so callers control bind address/TLS/etc.
 type Server struct {
-	mgr      *exitmgr.Manager
-	sessions *sessionStore
-	user     string
-	pass     string
-	mux      *http.ServeMux
+	mgr       *exitmgr.Manager
+	sessions  *sessionStore
+	user      string
+	pass      string
+	publicKey string
+	mux       *http.ServeMux
 }
 
-func NewServer(mgr *exitmgr.Manager, user, pass string) *Server {
+// NewServer builds the panel's HTTP handler. publicKey is the panel's own
+// Noise static public key (base64, printed at startup): clients need it as
+// their --peer-key, and the panel is the only place an operator should have
+// to look for it day to day, so it's also served over /api/panel-key.
+func NewServer(mgr *exitmgr.Manager, user, pass, publicKey string) *Server {
 	s := &Server{
-		mgr:      mgr,
-		sessions: newSessionStore(),
-		user:     user,
-		pass:     pass,
-		mux:      http.NewServeMux(),
+		mgr:       mgr,
+		sessions:  newSessionStore(),
+		user:      user,
+		pass:      pass,
+		publicKey: publicKey,
+		mux:       http.NewServeMux(),
 	}
 	s.routes()
 	return s
@@ -51,8 +58,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/logout", s.handleLogout)
 	s.mux.HandleFunc("GET /api/session", s.handleSession)
 
+	s.mux.HandleFunc("GET /api/panel-key", s.requireAuth(s.handlePanelKey))
+
 	s.mux.HandleFunc("GET /api/clients", s.requireAuth(s.handleListClients))
 	s.mux.HandleFunc("POST /api/clients", s.requireAuth(s.handleAddClient))
+	s.mux.HandleFunc("PUT /api/clients/{id}", s.requireAuth(s.handleUpdateClient))
 	s.mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuth(s.handleRemoveClient))
 
 	sub, err := fs.Sub(staticFS, "static")
@@ -120,6 +130,10 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": authenticated})
 }
 
+func (s *Server) handlePanelKey(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"public_key": s.publicKey})
+}
+
 func (s *Server) handleListClients(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.mgr.List())
 }
@@ -147,6 +161,28 @@ func (s *Server) handleAddClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": cfg.ID})
+}
+
+func (s *Server) handleUpdateClient(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var cfg exitmgr.ClientConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.mgr.UpdateClient(id, cfg); err != nil {
+		// UpdateClient's only pre-start failure mode is "not found"; a start
+		// failure (bad config, transport wouldn't come up) is a 400 like
+		// AddClient's, since the client is still registered (in an "error"
+		// state) rather than rejected outright.
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeJSONError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleRemoveClient(w http.ResponseWriter, r *http.Request) {

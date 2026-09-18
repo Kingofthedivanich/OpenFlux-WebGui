@@ -14,11 +14,13 @@ import (
 // ClientStatus is a point-in-time snapshot of one client's state, safe to
 // serialize and hand back over the panel's HTTP API.
 type ClientStatus struct {
-	Config    ClientConfig  `json:"config"`
-	Status    string        `json:"status"` // "running" | "error"
-	Error     string        `json:"error,omitempty"`
-	StartedAt time.Time     `json:"started_at,omitempty"`
-	Stats     *tunnel.Stats `json:"stats,omitempty"`
+	Config        ClientConfig  `json:"config"`
+	Status        string        `json:"status"` // "running" | "error"
+	Error         string        `json:"error,omitempty"`
+	StartedAt     time.Time     `json:"started_at,omitempty"`
+	Stats         *tunnel.Stats `json:"stats,omitempty"`
+	BytesSent     uint64        `json:"bytes_sent,omitempty"`
+	BytesReceived uint64        `json:"bytes_received,omitempty"`
 }
 
 type runningClient struct {
@@ -151,6 +153,45 @@ func (m *Manager) start(cfg ClientConfig) error {
 	return nil
 }
 
+// UpdateClient replaces a registered client's config: stops its current
+// transport/tunnel and starts a new one from cfg, keeping the same id. On a
+// start failure the client is left registered in an "error" state (as
+// AddClient does) rather than reverting to the old config, so the operator
+// sees the failure and can fix it instead of the edit silently no-op'ing.
+func (m *Manager) UpdateClient(id string, cfg ClientConfig) error {
+	cfg.ID = id
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	old, exists := m.clients[id]
+	m.mu.Unlock()
+	if !exists {
+		return fmt.Errorf("client %q not found", id)
+	}
+	if old.tun != nil {
+		old.tun.Close()
+	}
+	if old.trans != nil {
+		old.trans.Stop()
+	}
+
+	startErr := m.start(cfg)
+	if startErr != nil {
+		m.mu.Lock()
+		m.clients[cfg.ID] = &runningClient{cfg: cfg, status: "error", lastErr: startErr}
+		m.mu.Unlock()
+	}
+
+	if m.store != nil {
+		if err := m.store.Save(m.configs()); err != nil {
+			return fmt.Errorf("client updated but failed to persist: %w", err)
+		}
+	}
+	return startErr
+}
+
 // RemoveClient stops and unregisters a client, and removes it from
 // persistence so it doesn't come back on the next restart.
 func (m *Manager) RemoveClient(id string) error {
@@ -214,6 +255,11 @@ func statusOf(rc *runningClient) ClientStatus {
 	if rc.tun != nil {
 		stats := rc.tun.StatsSnapshot()
 		s.Stats = &stats
+	}
+	if rc.trans != nil {
+		ts := rc.trans.Stats()
+		s.BytesSent = ts.BytesSent
+		s.BytesReceived = ts.BytesReceived
 	}
 	return s
 }
