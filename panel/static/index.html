@@ -67,9 +67,12 @@
     </label>
 
     <div id="f-url-group" class="field-group">
-      <label>URL документа
+      <label id="f-url-label">URL документа
         <input type="text" id="f-url" placeholder="https://disk.yandex.com/i/..." />
       </label>
+      <div id="f-url-hint" class="hint-text" style="display:none">
+        Несколько документов через запятую — один туннель поверх всех сразу (multi-stream): если один документ отвалится, туннель продолжит работать через остальные. У клиента должен быть тот же набор адресов.
+      </div>
     </div>
 
     <div id="f-cupsonline-note" class="hint-text" style="display:none">
