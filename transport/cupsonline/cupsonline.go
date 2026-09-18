@@ -150,6 +150,9 @@ func authorize(roomURL string) (*cupsAuth, error) {
 		subURL:     firstMatch(reMetaSubURL, html),
 		httpClient: client,
 	}
+	if a.roomUUID != "" && !strings.Contains(a.roomURL, "room=") {
+		a.roomURL = fmt.Sprintf("%s?room=%s", strings.TrimRight(roomURL, "/"), a.roomUUID)
+	}
 	for _, c := range jar.Cookies(mustParseURL(roomURL)) {
 		if c.Name == "csrftoken" {
 			a.csrfToken = c.Value
@@ -286,6 +289,7 @@ type channelStats struct {
 // ---- WS ----
 
 type cupsWS struct {
+	authMu sync.RWMutex
 	auth   *cupsAuth
 	config CupsonlineConfig
 	conn   *websocket.Conn
@@ -301,6 +305,18 @@ type cupsWS struct {
 	sendQueue chan []byte
 
 	stats *channelStats
+}
+
+func (w *cupsWS) getAuth() *cupsAuth {
+	w.authMu.RLock()
+	defer w.authMu.RUnlock()
+	return w.auth
+}
+
+func (w *cupsWS) updateAuth(newAuth *cupsAuth) {
+	w.authMu.Lock()
+	w.auth = newAuth
+	w.authMu.Unlock()
 }
 
 func (w *cupsWS) nextID() int64 { return w.rpcID.Add(1) }
@@ -331,15 +347,20 @@ func (w *cupsWS) run() {
 		default:
 		}
 		if err := w.connectAndServe(); err != nil {
-			utils.Debugf("[CUPS] ws error (%s): %v", w.auth.roomUUID, err)
+			auth := w.getAuth()
+			roomUUID := ""
+			if auth != nil {
+				roomUUID = auth.roomUUID
+			}
+			utils.Debugf("[CUPS] ws error (%s): %v", roomUUID, err)
 			// При ошибке подключения (например, если протух токен сессии/JWT или заблокирована комната)
 			// заново выполняем авторизацию комнаты для получения свежих токенов и cookies.
-			if w.auth != nil && w.auth.roomURL != "" {
-				if newAuth, authErr := authorize(w.auth.roomURL); authErr == nil {
-					w.auth = newAuth
-					utils.Debugf("[CUPS] re-authorize OK: room=%s", w.auth.roomUUID)
+			if auth != nil && auth.roomURL != "" {
+				if newAuth, authErr := authorize(auth.roomURL); authErr == nil {
+					w.updateAuth(newAuth)
+					utils.Debugf("[CUPS] re-authorize OK: room=%s", newAuth.roomUUID)
 				} else {
-					utils.Debugf("[CUPS] re-authorize failed (%s): %v", w.auth.roomUUID, authErr)
+					utils.Debugf("[CUPS] re-authorize failed (%s): %v", roomUUID, authErr)
 				}
 			}
 		}
@@ -361,15 +382,22 @@ func (w *cupsWS) run() {
 }
 
 func (w *cupsWS) connectAndServe() error {
-	wsURL := strings.Replace(w.auth.connURL, "https://", "wss://", 1)
+	auth := w.getAuth()
+	if auth == nil {
+		return fmt.Errorf("no auth")
+	}
+
+	wsURL := strings.Replace(auth.connURL, "https://", "wss://", 1)
 	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
 	wsURL = strings.TrimRight(wsURL, "/") + "/websocket"
 
 	header := http.Header{}
-	header.Set("Origin", originOf(w.auth.connURL))
+	header.Set("Origin", originOf(auth.connURL))
 	header.Set("User-Agent", cupsUA)
-	for _, c := range w.auth.httpClient.Jar.Cookies(mustParseURL(w.auth.connURL)) {
-		header.Add("Cookie", c.Name+"="+c.Value)
+	if auth.httpClient != nil && auth.httpClient.Jar != nil {
+		for _, c := range auth.httpClient.Jar.Cookies(mustParseURL(auth.connURL)) {
+			header.Add("Cookie", c.Name+"="+c.Value)
+		}
 	}
 
 	dialer := websocket.Dialer{
@@ -394,7 +422,7 @@ func (w *cupsWS) connectAndServe() error {
 	conn.SetReadLimit(int64(w.config.ReadBufferSize))
 
 	if err := w.writeJSON(map[string]interface{}{
-		"id": 1, "connect": map[string]interface{}{"token": w.auth.connToken, "name": "js"},
+		"id": 1, "connect": map[string]interface{}{"token": auth.connToken, "name": "js"},
 	}); err != nil {
 		return err
 	}
@@ -403,7 +431,7 @@ func (w *cupsWS) connectAndServe() error {
 		return err
 	}
 	if err := w.writeJSON(map[string]interface{}{
-		"id": 2, "subscribe": map[string]interface{}{"channel": w.auth.channel, "token": w.auth.subToken},
+		"id": 2, "subscribe": map[string]interface{}{"channel": auth.channel, "token": auth.subToken},
 	}); err != nil {
 		return err
 	}
@@ -412,7 +440,7 @@ func (w *cupsWS) connectAndServe() error {
 		return err
 	}
 	w.connected.Store(true)
-	utils.Debugf("[CUPS] WS ready: %s", w.auth.roomUUID)
+	utils.Debugf("[CUPS] WS ready: %s", auth.roomUUID)
 
 	kaStop := make(chan struct{})
 	go w.keepAliveLoop(kaStop)
@@ -443,10 +471,14 @@ func (w *cupsWS) keepAliveLoop(stop chan struct{}) {
 		case <-w.ctx:
 			return
 		case <-t.C:
+			auth := w.getAuth()
+			if auth == nil {
+				continue
+			}
 			_ = w.writeJSON(map[string]interface{}{
 				"rpc": map[string]interface{}{
 					"method": "shared_editor_ping",
-					"data":   map[string]interface{}{"room": w.auth.roomUUID, "user": w.auth.userUUID},
+					"data":   map[string]interface{}{"room": auth.roomUUID, "user": auth.userUUID},
 				},
 				"id": w.nextID(),
 			})
@@ -475,7 +507,12 @@ func (w *cupsWS) sendLoop() {
 			}
 		}
 		if err := w.sendBatch(batch); err != nil {
-			utils.Debugf("[CUPS] batch send (%s): %v", w.auth.roomUUID, err)
+			auth := w.getAuth()
+			roomUUID := ""
+			if auth != nil {
+				roomUUID = auth.roomUUID
+			}
+			utils.Debugf("[CUPS] batch send (%s): %v", roomUUID, err)
 		}
 		batch = batch[:0]
 		totalBytes = 0
@@ -511,6 +548,11 @@ func (w *cupsWS) sendLoop() {
 }
 
 func (w *cupsWS) sendBatch(batch [][]byte) error {
+	auth := w.getAuth()
+	if auth == nil {
+		return fmt.Errorf("no auth")
+	}
+
 	var buf bytes.Buffer
 	var hdr [2]byte
 	totalRaw := 0
@@ -528,8 +570,8 @@ func (w *cupsWS) sendBatch(batch [][]byte) error {
 			"data": map[string]interface{}{
 				"cursors": []map[string]interface{}{{"row": 0, "column": col}},
 				"ranges":  []interface{}{},
-				"room":    w.auth.roomUUID,
-				"user":    w.auth.userUUID,
+				"room":    auth.roomUUID,
+				"user":    auth.userUUID,
 			},
 		},
 		"id": w.nextID(),
@@ -568,7 +610,11 @@ func (w *cupsWS) handleMessage(raw []byte) {
 	if payload == nil {
 		return
 	}
-	if uuid, _ := payload["user_uuid"].(string); uuid == w.auth.userUUID {
+	auth := w.getAuth()
+	if auth == nil {
+		return
+	}
+	if uuid, _ := payload["user_uuid"].(string); uuid == auth.userUUID {
 		return
 	}
 	cursors, _ := payload["cursors"].([]interface{})
@@ -841,9 +887,13 @@ func (t *CupsonlineTransport) Send(data []byte) error {
 			fs = &flowSender{chIdx: idx}
 			t.flows[key] = fs
 			t.wss[idx].stats.flows.Add(1)
+			roomID := ""
+			if auth := t.wss[idx].getAuth(); auth != nil && len(auth.roomUUID) >= 8 {
+				roomID = auth.roomUUID[:8]
+			}
 			utils.Debugf("[CUPS] new flow %s:%d -> %s:%d proto=%d -> ws[%d] %s",
 				ipStr(key.srcIP), key.srcPort, ipStr(key.dstIP), key.dstPort, key.proto,
-				idx, t.wss[idx].auth.roomUUID[:8])
+				idx, roomID)
 		}
 		t.flowMu.Unlock()
 	}
@@ -924,8 +974,13 @@ func (t *CupsonlineTransport) statsLoop() {
 				totalBytesSent += bs
 				totalBytesRecv += br
 
+				roomID := ""
+				if auth := ws.getAuth(); auth != nil && len(auth.roomUUID) >= 8 {
+					roomID = auth.roomUUID[:8]
+				}
+
 				utils.Debugf("[CH-%02d %s] tx=%d pkt/s (%.1f KB/s)  rx=%d pkt/s (%.1f KB/s)  flows=%d  reconn=%d  conn=%v",
-					i, ws.auth.roomUUID[:8],
+					i, roomID,
 					dS/uint64(t.config.StatsInterval.Seconds()),
 					float64(dBS)/t.config.StatsInterval.Seconds()/1024,
 					dR/uint64(t.config.StatsInterval.Seconds()),

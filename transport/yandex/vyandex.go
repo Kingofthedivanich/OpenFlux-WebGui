@@ -438,6 +438,7 @@ func minInt(a, b int) int {
 }
 
 type relayClient struct {
+	authMu sync.RWMutex
 	auth   *volgaAuth
 	config VolgaConfig
 	stats  *VolgaStats
@@ -455,6 +456,21 @@ type relayClient struct {
 
 	mu       sync.Mutex
 	frontier string
+}
+
+func (r *relayClient) updateAuth(newAuth *volgaAuth) {
+	r.authMu.Lock()
+	r.auth = newAuth
+	if newAuth != nil && newAuth.Session != nil && newAuth.Session.Jar != nil {
+		r.httpClient.Jar = newAuth.Session.Jar
+	}
+	r.authMu.Unlock()
+}
+
+func (r *relayClient) getAuth() *volgaAuth {
+	r.authMu.RLock()
+	defer r.authMu.RUnlock()
+	return r.auth
 }
 
 func newRelayClient(auth *volgaAuth, cfg VolgaConfig, stats *VolgaStats) *relayClient {
@@ -579,6 +595,11 @@ func (r *relayClient) worker(id int) {
 }
 
 func (r *relayClient) sendBatch(batch [][]byte) error {
+	auth := r.getAuth()
+	if auth == nil {
+		return fmt.Errorf("no auth")
+	}
+
 	blob := blobBufPool.Get().(*bytes.Buffer)
 	blob.Reset()
 
@@ -595,8 +616,8 @@ func (r *relayClient) sendBatch(batch [][]byte) error {
 	blobBufPool.Put(blob)
 
 	frontier := r.getFrontier()
-	opID := fmt.Sprintf("1-%d.%d", r.auth.UserID, r.seq.Add(1))
-	relayOpID := fmt.Sprintf("1-%d.%d", r.auth.UserID, r.seq.Add(1))
+	opID := fmt.Sprintf("1-%d.%d", auth.UserID, r.seq.Add(1))
+	relayOpID := fmt.Sprintf("1-%d.%d", auth.UserID, r.seq.Add(1))
 
 	bundle := []interface{}{
 		map[string]interface{}{
@@ -614,7 +635,7 @@ func (r *relayClient) sendBatch(batch [][]byte) error {
 			"undoable":   false,
 			"actionName": "setCaret",
 			"ops": []interface{}{
-				[]interface{}{"us", r.auth.UserID, []interface{}{
+				[]interface{}{"us", auth.UserID, []interface{}{
 					[]interface{}{
 						[]interface{}{"vyd:t/00000000000008", 0, -1},
 						[]interface{}{"vyd:t/00000000000008", 0, -1},
@@ -647,16 +668,16 @@ func (r *relayClient) sendBatch(batch [][]byte) error {
 	copy(bodyCopy, buf.Bytes())
 	jsonBufPool.Put(buf)
 
-	urlStr := fmt.Sprintf("https://volga.yandex.ru/session/main/%s/relay", r.auth.RequestPath)
+	urlStr := fmt.Sprintf("https://volga.yandex.ru/session/main/%s/relay", auth.RequestPath)
 	req, err := http.NewRequestWithContext(r.ctx, "POST", urlStr, bytes.NewReader(bodyCopy))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", volgaUserAgent)
-	req.Header.Set("Authorization", "Bearer "+r.auth.Token)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "https://volga.yandex.ru")
-	req.Header.Set("Referer", "https://volga.yandex.ru/document/?request-path="+r.auth.RequestPath)
+	req.Header.Set("Referer", "https://volga.yandex.ru/document/?request-path="+auth.RequestPath)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
@@ -664,7 +685,7 @@ func (r *relayClient) sendBatch(batch [][]byte) error {
 	req.ContentLength = int64(len(bodyCopy))
 
 	var cookieParts []string
-	for _, c := range r.auth.Cookies {
+	for _, c := range auth.Cookies {
 		cookieParts = append(cookieParts, c.Name+"="+c.Value)
 	}
 	if len(cookieParts) > 0 {
@@ -704,6 +725,7 @@ func (r *relayClient) getFrontier() []interface{} {
 }
 
 type wsListener struct {
+	authMu sync.RWMutex
 	auth   *volgaAuth
 	config VolgaConfig
 	stats  *VolgaStats
@@ -712,6 +734,21 @@ type wsListener struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+func (w *wsListener) getAuth() *volgaAuth {
+	w.authMu.RLock()
+	defer w.authMu.RUnlock()
+	return w.auth
+}
+
+func (w *wsListener) updateAuth(newAuth *volgaAuth) {
+	w.authMu.Lock()
+	w.auth = newAuth
+	w.authMu.Unlock()
+	if w.relay != nil {
+		w.relay.updateAuth(newAuth)
+	}
 }
 
 func newWSListener(auth *volgaAuth, cfg VolgaConfig, stats *VolgaStats,
@@ -752,13 +789,11 @@ func (w *wsListener) run() {
 			utils.Debugf("[VOLGA] WS error: %v", err)
 			// При ошибке WebSocket (например, когда истек токен/сессия Yandex Volga или закрылось соединение)
 			// выполняем повторную авторизацию документа для получения свежих токенов и cookies.
-			if w.auth != nil && w.auth.docURL != "" {
-				if newAuth, authErr := authorize(w.auth.docURL); authErr == nil {
-					w.auth = newAuth
-					if w.relay != nil {
-						w.relay.auth = newAuth
-					}
-					utils.Debugf("[VOLGA] re-authorize OK: user=%s", w.auth.UserIDStr)
+			auth := w.getAuth()
+			if auth != nil && auth.docURL != "" {
+				if newAuth, authErr := authorize(auth.docURL); authErr == nil {
+					w.updateAuth(newAuth)
+					utils.Debugf("[VOLGA] re-authorize OK: user=%s", newAuth.UserIDStr)
 				} else {
 					utils.Debugf("[VOLGA] re-authorize failed: %v", authErr)
 				}
@@ -790,14 +825,19 @@ func (w *wsListener) run() {
 }
 
 func (w *wsListener) connect() error {
+	auth := w.getAuth()
+	if auth == nil {
+		return fmt.Errorf("no auth")
+	}
+
 	wsURL := "wss://push.yandex.ru/v2/subscribe/websocket?" +
 		"service=volga" +
-		"&user=" + url.QueryEscape(w.auth.UserIDStr) +
-		"&sign=" + w.auth.Sign +
-		"&ts=" + w.auth.TS +
+		"&user=" + url.QueryEscape(auth.UserIDStr) +
+		"&sign=" + auth.Sign +
+		"&ts=" + auth.TS +
 		"&client=web" +
-		"&session=" + w.auth.SessionID +
-		"&fetch_history=" + url.QueryEscape(w.auth.UserIDStr+":volga:0:1") +
+		"&session=" + auth.SessionID +
+		"&fetch_history=" + url.QueryEscape(auth.UserIDStr+":volga:0:1") +
 		"&x_request_attempt=0"
 
 	header := http.Header{}
@@ -805,7 +845,7 @@ func (w *wsListener) connect() error {
 	header.Set("Origin", "https://volga.yandex.ru")
 
 	var cookieParts []string
-	for _, c := range w.auth.Cookies {
+	for _, c := range auth.Cookies {
 		cookieParts = append(cookieParts, c.Name+"="+c.Value)
 	}
 	header.Set("Cookie", strings.Join(cookieParts, "; "))
@@ -822,7 +862,7 @@ func (w *wsListener) connect() error {
 	}
 	defer conn.Close()
 
-	utils.Debugf("[VOLGA] WS connected: user=%s", w.auth.UserIDStr)
+	utils.Debugf("[VOLGA] WS connected: user=%s", auth.UserIDStr)
 
 	for {
 		select {
@@ -870,7 +910,8 @@ func (w *wsListener) handleMessage(raw []byte) {
 		return
 	}
 
-	if inner.UserID == w.auth.UserID {
+	auth := w.getAuth()
+	if auth != nil && inner.UserID == auth.UserID {
 		return
 	}
 
