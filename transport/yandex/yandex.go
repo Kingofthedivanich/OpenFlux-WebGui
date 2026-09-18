@@ -3,6 +3,7 @@ package yandex
 import (
 	"context"
 	"crypto/tls"
+	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -410,19 +411,25 @@ func (t *YandexDocsTransport) writerLoop() {
 	}
 }
 
-// keepAliveFrame is a cursor message the peer recognizes and drops; it keeps
-// the session warm and tells the peer this document reaches us.
-const keepAliveFrame = `42["message",{"type":"cursor","cursor":"18;---KA---"}]`
-
+// keepAliveLoop periodically sends a cursor message the peer recognizes and
+// drops; it keeps the session warm and tells the peer this document reaches
+// us.
 func (t *YandexDocsTransport) keepAliveLoop() {
-	ticker := time.NewTicker(t.GetConfig().KeepAliveInterval)
-	defer ticker.Stop()
-
+	base := t.GetConfig().KeepAliveInterval
 	ctx := t.runCtx()
 	for t.IsRunning() {
+		// Jittered 0.5x-1.5x sleep instead of a fixed ticker: a constant
+		// interval is as much a traffic-analysis fingerprint as a constant
+		// payload (see randomKeepAlivePadding), and survives TLS either way.
+		jitter := time.Duration(rand.Int63n(int64(base))) - base/2
+		timer := time.NewTimer(base + jitter)
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 		case <-ctx.Done():
+			timer.Stop()
+			return
+		}
+		if !t.IsRunning() {
 			return
 		}
 		t.Mu.Lock()
@@ -430,7 +437,8 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 		t.Mu.Unlock()
 
 		if session != nil && session.Conn != nil {
-			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveFrame)); err != nil {
+			keepAliveMsg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s%s"}]`, keepAliveMarker, randomKeepAlivePadding())
+			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveMsg)); err != nil {
 				utils.Debugf("[YDOCS] Keep-alive failed: %v", err)
 				// A failed write leaves the conn unusable for writes while
 				// reads may still block for a long time. Close it so the read
@@ -448,10 +456,28 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 	}
 }
 
+// keepAliveMarker replaces the old fixed "---KA---" sentinel. Keep-alive
+// packets used to be fixed-size and fixed-interval, which is a distinguishing
+// signature for traffic analysis even over TLS (packet size + timing survive
+// encryption). Randomizing both the interval (see keepAliveLoop) and the
+// padding length below breaks that fingerprint.
+const keepAliveMarker = "__KA__"
+
+func randomKeepAlivePadding() string {
+	n := 4 + rand.Intn(48)
+	buf := make([]byte, n)
+	if _, err := crand.Read(buf); err != nil {
+		for i := range buf {
+			buf[i] = byte(rand.Intn(256))
+		}
+	}
+	return base64.StdEncoding.EncodeToString(buf)
+}
+
 func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 	text := string(data)
 
-	if strings.Contains(text, "---KA---") {
+	if strings.Contains(text, keepAliveMarker) {
 		// The server never echoes our own cursor messages back, so this is
 		// the peer's keepalive: proof that this document reaches it.
 		t.RecordPeerActivity()
@@ -542,7 +568,8 @@ func (t *YandexDocsTransport) handleParticipants(session *DocSession, text strin
 		if p.ConnectionID != session.connID {
 			// Someone else is here, possibly the peer that just (re)joined:
 			// greet it so it hears us without waiting for our next tick.
-			session.safeWrite(websocket.TextMessage, []byte(keepAliveFrame))
+			greeting := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s%s"}]`, keepAliveMarker, randomKeepAlivePadding())
+			session.safeWrite(websocket.TextMessage, []byte(greeting))
 			return
 		}
 	}

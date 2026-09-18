@@ -2,6 +2,7 @@ package yandex
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -142,5 +143,40 @@ func TestFetchDocInfoMissingPermissionsFallsBack(t *testing.T) {
 	}
 	if info.Permissions == nil {
 		t.Error("Permissions should fall back to an empty map, got nil")
+	}
+}
+
+// randomKeepAlivePadding must stay within the documented 4-51 raw byte
+// range and actually vary run to run -- a fixed length would reintroduce
+// the packet-size fingerprint jitter is meant to break.
+func TestRandomKeepAlivePaddingBoundsAndVaries(t *testing.T) {
+	const minRaw, maxRaw = 4, 51
+	lengths := make(map[int]bool)
+	for i := 0; i < 200; i++ {
+		s := randomKeepAlivePadding()
+		raw, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			t.Fatalf("randomKeepAlivePadding() = %q is not valid base64: %v", s, err)
+		}
+		if len(raw) < minRaw || len(raw) > maxRaw {
+			t.Fatalf("raw length = %d, want [%d,%d]", len(raw), minRaw, maxRaw)
+		}
+		lengths[len(raw)] = true
+	}
+	if len(lengths) < 2 {
+		t.Fatal("200 calls produced the same length every time; padding is not actually randomized")
+	}
+}
+
+// The keep-alive marker must survive inside the cursor payload unbroken by
+// the random padding placed right after it, or handleMessage's
+// strings.Contains(text, keepAliveMarker) check (and the peer's matching
+// check) stops recognizing keep-alives.
+func TestKeepAliveMarkerSurvivesInGeneratedMessage(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s%s"}]`, keepAliveMarker, randomKeepAlivePadding())
+		if !strings.Contains(msg, keepAliveMarker) {
+			t.Fatalf("generated keep-alive %q does not contain the marker %q", msg, keepAliveMarker)
+		}
 	}
 }

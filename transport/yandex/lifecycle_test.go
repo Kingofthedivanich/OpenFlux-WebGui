@@ -167,13 +167,13 @@ func TestYandexDocsTransportDataKeepaliveAndStop(t *testing.T) {
 	}
 	b64 := base64.StdEncoding.EncodeToString([]byte("hello"))
 	waitFor(t, "outbound packet", 2*time.Second, func() bool { return srv.received(b64) })
-	waitFor(t, "keepalive", 2*time.Second, func() bool { return srv.received("---KA---") })
+	waitFor(t, "keepalive", 2*time.Second, func() bool { return srv.received("__KA__") })
 
 	// The peer's keepalive marks the peer as heard from without delivering data.
 	if !tr.Stats().LastRecv.IsZero() {
 		t.Fatal("LastRecv set before anything arrived from the peer")
 	}
-	srv.push(t, `42["message",{"type":"cursor","messages":[{"cursor":"18;---KA---"}]}]`)
+	srv.push(t, `42["message",{"type":"cursor","messages":[{"cursor":"18;__KA__"}]}]`)
 	waitFor(t, "peer keepalive", 2*time.Second, func() bool { return !tr.Stats().LastRecv.IsZero() })
 
 	// Inbound packet reaches the callback.
@@ -250,7 +250,7 @@ func TestYandexDocsTransportForgetsPeerWhenAlone(t *testing.T) {
 	waitFor(t, "connect", 5*time.Second, func() bool { return tr.IsConnected() && srv.connCount() == 1 })
 
 	heard := func() bool { return !tr.Stats().LastRecv.IsZero() }
-	const ka = `42["message",{"type":"cursor","messages":[{"cursor":"18;---KA---"}]}]`
+	const ka = `42["message",{"type":"cursor","messages":[{"cursor":"18;__KA__"}]}]`
 	srv.push(t, `40{"sid":"me"}`)
 	srv.push(t, ka)
 	waitFor(t, "peer keepalive", 2*time.Second, heard)
@@ -289,19 +289,19 @@ func TestYandexDocsTransportGreetsPeer(t *testing.T) {
 	defer tr.Stop()
 	waitFor(t, "connect", 5*time.Second, func() bool { return tr.IsConnected() && srv.connCount() == 1 })
 	time.Sleep(100 * time.Millisecond)
-	if n := srv.countReceived("---KA---"); n != 0 {
+	if n := srv.countReceived("__KA__"); n != 0 {
 		t.Fatalf("keepalive sent before the auth reply (%d)", n)
 	}
 
 	srv.push(t, `40{"sid":"me"}`)
 	srv.push(t, `42["message",{"type":"auth","sessionId":"me","participants":[{"connectionId":"me"},{"connectionId":"peer"}]}]`)
-	waitFor(t, "keepalive for peer in auth reply", 2*time.Second, func() bool { return srv.countReceived("---KA---") == 1 })
+	waitFor(t, "keepalive for peer in auth reply", 2*time.Second, func() bool { return srv.countReceived("__KA__") == 1 })
 	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"},{"connectionId":"peer2"}]}]`)
-	waitFor(t, "keepalive for new participant", 2*time.Second, func() bool { return srv.countReceived("---KA---") == 2 })
+	waitFor(t, "keepalive for new participant", 2*time.Second, func() bool { return srv.countReceived("__KA__") == 2 })
 
 	srv.push(t, `42["message",{"type":"connectState","participants":[{"connectionId":"me"}]}]`)
 	time.Sleep(100 * time.Millisecond)
-	if n := srv.countReceived("---KA---"); n != 2 {
+	if n := srv.countReceived("__KA__"); n != 2 {
 		t.Fatalf("keepalive sent with nobody else in the document (%d total)", n)
 	}
 }
