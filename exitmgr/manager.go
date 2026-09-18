@@ -8,6 +8,7 @@ import (
 	"github.com/flynn/noise"
 
 	"openflux/transport"
+	"openflux/transport/cupsonline"
 	"openflux/tunnel"
 )
 
@@ -21,6 +22,12 @@ type ClientStatus struct {
 	Stats         *tunnel.Stats `json:"stats,omitempty"`
 	BytesSent     uint64        `json:"bytes_sent,omitempty"`
 	BytesReceived uint64        `json:"bytes_received,omitempty"`
+	// CupsonlineRooms is the base64 room list a cupsonline client needs as
+	// its --url (unlike every other transport, the panel's own cfg.URL is
+	// ignored for cupsonline exit clients -- the exit generates the rooms
+	// itself). Empty for every other transport, and empty until the
+	// client's transport has actually started.
+	CupsonlineRooms string `json:"cupsonline_rooms,omitempty"`
 }
 
 type runningClient struct {
@@ -260,8 +267,32 @@ func statusOf(rc *runningClient) ClientStatus {
 		ts := rc.trans.Stats()
 		s.BytesSent = ts.BytesSent
 		s.BytesReceived = ts.BytesReceived
+		if cups, ok := unwrapCupsonline(rc.trans); ok {
+			s.CupsonlineRooms = cups.RoomsPacked()
+		}
 	}
 	return s
+}
+
+// unwrapCupsonline walks down BuildTransport's codec/encryption wrapper
+// chain to the raw cupsonline transport underneath, if that's what this
+// client uses. Mirrors the exact wrap order BuildTransport uses (see
+// exitmgr/transport_test.go's regression test for that order).
+func unwrapCupsonline(t transport.Transport) (*cupsonline.CupsonlineTransport, bool) {
+	for {
+		switch v := t.(type) {
+		case *transport.BatchedTransport:
+			t = v.Transport
+		case *transport.CompressedTransport:
+			t = v.Transport
+		case *transport.EncryptedTransport:
+			t = v.Transport
+		case *cupsonline.CupsonlineTransport:
+			return v, true
+		default:
+			return nil, false
+		}
+	}
 }
 
 // configs returns the persisted-config view of every registered client

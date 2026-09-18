@@ -52,6 +52,10 @@ func TestClientConfigValidate(t *testing.T) {
 		{"oneme missing token", ClientConfig{ID: "a", Transport: "oneme", MaxUid: "1"}, true},
 		{"oneme valid", ClientConfig{ID: "a", Transport: "oneme", MaxToken: "t", MaxUid: "1"}, false},
 		{"bad codec", ClientConfig{ID: "a", Transport: "yandex", URL: "https://x", Codec: "zip"}, true},
+		// cupsonline's exit side generates its own rooms and ignores cfg.URL
+		// entirely (see exitmgr.BuildTransport / cupsonline.NewCupsonlineTransport),
+		// unlike every other URL-based transport.
+		{"cupsonline needs no url", ClientConfig{ID: "a", Transport: "cupsonline"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
