@@ -656,8 +656,9 @@ type CupsonlineTransport struct {
 	isClient  bool
 	clientErr error
 
-	auths []*cupsAuth
-	wss   []*cupsWS
+	auths       []*cupsAuth
+	wss         []*cupsWS
+	packedRooms string // exit only: the --url value client(s) need, set once in Start
 
 	flowMu sync.RWMutex
 	flows  map[flowKey]*flowSender
@@ -741,6 +742,7 @@ func (t *CupsonlineTransport) Start() error {
 			return fmt.Errorf("create rooms: %w", err)
 		}
 		packed := packRooms(auths)
+		t.packedRooms = packed
 		fmt.Printf("\n=== COPY THIS TO CLIENT ===\n")
 		fmt.Printf("%s\n", packed)
 		fmt.Printf("===========================\n\n")
@@ -960,6 +962,13 @@ func (t *CupsonlineTransport) RoomUUIDs() []string {
 		out = append(out, a.roomUUID)
 	}
 	return out
+}
+
+// RoomsPacked returns the base64 room list a client needs as its --url
+// (exit mode only; empty until Start has created the rooms, and empty in
+// client mode since the client already has this value).
+func (t *CupsonlineTransport) RoomsPacked() string {
+	return t.packedRooms
 }
 
 // ---- helpers ----

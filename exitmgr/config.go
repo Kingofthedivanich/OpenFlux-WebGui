@@ -15,7 +15,7 @@ type ClientConfig struct {
 	Name      string `json:"name"`
 	Transport string `json:"transport"` // yandex | vyandex | oneme | cupsonline | mailru
 
-	URL      string `json:"url,omitempty"`       // yandex, vyandex, cupsonline, mailru
+	URL      string `json:"url,omitempty"`       // yandex, vyandex, mailru (ignored for cupsonline: the exit makes its own rooms)
 	MaxToken string `json:"max_token,omitempty"` // oneme
 	MaxUid   string `json:"max_uid,omitempty"`   // oneme
 
@@ -41,7 +41,7 @@ func (c ClientConfig) Validate() error {
 		return fmt.Errorf("unknown transport %q (want yandex|vyandex|oneme|cupsonline|mailru)", c.Transport)
 	}
 	switch c.Transport {
-	case "yandex", "vyandex", "cupsonline", "mailru":
+	case "yandex", "vyandex", "mailru":
 		if c.URL == "" {
 			return fmt.Errorf("transport %q requires url", c.Transport)
 		}

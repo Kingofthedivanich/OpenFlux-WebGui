@@ -67,3 +67,30 @@ func TestBuildTransportWrapsLegacyCodecOverEncryption(t *testing.T) {
 		t.Fatalf("codec wraps %T, want *transport.EncryptedTransport directly underneath", compressed.Transport)
 	}
 }
+
+// unwrapCupsonline (used to surface the room list a cupsonline client needs
+// as --url, see manager.go) depends on the exact wrap chain BuildTransport
+// produces. This locks that chain in for the cupsonline backend
+// specifically, since it's the one BuildTransport builds with isClient=false
+// unconditionally -- a wiring mistake there wouldn't show up in the
+// generic yandex-backed tests above.
+func TestBuildTransportCupsonlineIsReachableByUnwrapCupsonline(t *testing.T) {
+	key, err := transport.GenerateStaticKey()
+	if err != nil {
+		t.Fatalf("generate static key: %v", err)
+	}
+
+	cfg := ClientConfig{ID: "c1", Transport: "cupsonline"}
+	trans, err := BuildTransport(cfg, transport.DefaultConfig(), key)
+	if err != nil {
+		t.Fatalf("BuildTransport: %v", err)
+	}
+
+	cups, ok := unwrapCupsonline(trans)
+	if !ok {
+		t.Fatalf("unwrapCupsonline could not reach a *cupsonline.CupsonlineTransport through %T", trans)
+	}
+	// RoomsPacked is empty before Start creates the rooms; just confirm the
+	// unwrapped value is live (a nil pointer would panic here).
+	_ = cups.RoomsPacked()
+}
