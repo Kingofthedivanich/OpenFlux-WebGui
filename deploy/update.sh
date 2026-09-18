@@ -25,8 +25,16 @@ current_version="$("$BINARY" --version 2>/dev/null || echo unknown)"
 echo "Current version: $current_version"
 
 echo "Checking latest release of $REPO..."
-latest_tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+# Buffer the whole response before parsing it: piping curl straight into
+# `grep -m1` let grep close the pipe the instant it saw a match, so on a
+# large enough response curl was still writing when that happened, got
+# SIGPIPE, and (with pipefail) killed this line under `set -e` -- silently,
+# before the error message below ever ran.
+release_json="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")" || {
+    echo "error: could not reach the GitHub API" >&2
+    exit 1
+}
+latest_tag="$(printf '%s' "$release_json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
 
 if [ -z "$latest_tag" ]; then
     echo "error: could not determine the latest release tag" >&2
