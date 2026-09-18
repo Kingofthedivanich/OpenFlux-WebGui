@@ -33,6 +33,14 @@
   </header>
 
   <main>
+    <div id="panel-key-card" class="panel-key-card">
+      <div class="panel-key-label">Публичный ключ панели (--peer-key для клиентов)</div>
+      <div class="panel-key-row">
+        <code id="panel-key-value">…</code>
+        <button type="button" id="panel-key-copy" class="ghost small">Копировать</button>
+      </div>
+    </div>
+
     <div id="clients-empty" class="empty-state" style="display:none">
       Нет ни одного клиента. Добавь первого.
     </div>
@@ -42,7 +50,7 @@
 
 <div id="add-modal" class="modal-overlay" style="display:none">
   <form id="add-form" class="modal-card">
-    <h2>Новый клиент</h2>
+    <h2 id="add-modal-title">Новый клиент</h2>
 
     <label>Имя
       <input type="text" id="f-name" required />
@@ -88,7 +96,7 @@
 
     <div class="modal-actions">
       <button type="button" id="add-cancel-btn" class="ghost">Отмена</button>
-      <button type="submit" class="primary">Добавить</button>
+      <button type="submit" id="add-submit-btn" class="primary">Добавить</button>
     </div>
   </form>
 </div>

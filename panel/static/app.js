@@ -13,11 +13,18 @@ const addCancelBtn = document.getElementById("add-cancel-btn");
 const transportSelect = document.getElementById("f-transport");
 const urlGroup = document.getElementById("f-url-group");
 const maxGroup = document.getElementById("f-max-group");
+const modalTitle = document.getElementById("add-modal-title");
+const submitBtn = document.getElementById("add-submit-btn");
 
 const clientsList = document.getElementById("clients-list");
 const clientsEmpty = document.getElementById("clients-empty");
 
+const panelKeyValue = document.getElementById("panel-key-value");
+const panelKeyCopyBtn = document.getElementById("panel-key-copy");
+
 let pollTimer = null;
+// Client id being edited, or null when the modal is in "add" mode.
+let editingID = null;
 
 async function api(path, opts) {
   const res = await fetch(path, {
@@ -36,9 +43,37 @@ async function api(path, opts) {
 function showDashboard() {
   loginView.style.display = "none";
   dashboardView.style.display = "block";
+  loadPanelKey();
   refreshClients();
   if (!pollTimer) pollTimer = setInterval(refreshClients, 3000);
 }
+
+async function loadPanelKey() {
+  try {
+    const { public_key } = await api("/api/panel-key");
+    panelKeyValue.textContent = public_key || "(не задан)";
+  } catch (_) {
+    panelKeyValue.textContent = "не удалось загрузить";
+  }
+}
+
+panelKeyCopyBtn.addEventListener("click", async () => {
+  const key = panelKeyValue.textContent;
+  try {
+    await navigator.clipboard.writeText(key);
+    const original = panelKeyCopyBtn.textContent;
+    panelKeyCopyBtn.textContent = "Скопировано";
+    setTimeout(() => { panelKeyCopyBtn.textContent = original; }, 1500);
+  } catch (_) {
+    // Clipboard API unavailable (e.g. non-secure context) -- select the
+    // text so the operator can still copy it manually.
+    const range = document.createRange();
+    range.selectNodeContents(panelKeyValue);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+});
 
 function showLogin() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -86,12 +121,39 @@ function fieldsForTransport(t) {
 transportSelect.addEventListener("change", () => fieldsForTransport(transportSelect.value));
 fieldsForTransport(transportSelect.value);
 
-addClientBtn.addEventListener("click", () => {
+function openAddModal() {
+  editingID = null;
   addForm.reset();
   addError.textContent = "";
+  modalTitle.textContent = "Новый клиент";
+  submitBtn.textContent = "Добавить";
   fieldsForTransport(transportSelect.value);
   addModal.style.display = "flex";
-});
+}
+
+function openEditModal(status) {
+  const cfg = status.config;
+  editingID = cfg.id;
+  addError.textContent = "";
+  modalTitle.textContent = "Редактировать клиента";
+  submitBtn.textContent = "Сохранить";
+
+  document.getElementById("f-name").value = cfg.name || "";
+  transportSelect.value = cfg.transport;
+  document.getElementById("f-url").value = cfg.url || "";
+  document.getElementById("f-max-token").value = cfg.max_token || "";
+  document.getElementById("f-max-uid").value = cfg.max_uid || "";
+  document.getElementById("f-codec").value = cfg.codec || "";
+  // The PSK file path is shown, but its secret content is never sent back
+  // by the API -- re-saving without touching this field keeps the same
+  // path (and thus the same secret) since the server only re-reads it.
+  document.getElementById("f-psk-file").value = cfg.psk_file || "";
+
+  fieldsForTransport(transportSelect.value);
+  addModal.style.display = "flex";
+}
+
+addClientBtn.addEventListener("click", openAddModal);
 addCancelBtn.addEventListener("click", () => { addModal.style.display = "none"; });
 addModal.addEventListener("click", (e) => { if (e.target === addModal) addModal.style.display = "none"; });
 
@@ -110,7 +172,11 @@ addForm.addEventListener("submit", async (e) => {
   };
 
   try {
-    await api("/api/clients", { method: "POST", body: JSON.stringify(cfg) });
+    if (editingID) {
+      await api(`/api/clients/${encodeURIComponent(editingID)}`, { method: "PUT", body: JSON.stringify(cfg) });
+    } else {
+      await api("/api/clients", { method: "POST", body: JSON.stringify(cfg) });
+    }
     addModal.style.display = "none";
   } catch (err) {
     addError.textContent = err.message;
@@ -141,6 +207,18 @@ function formatUptime(seconds) {
   return `${s}с`;
 }
 
+function formatBytes(bytes) {
+  if (!bytes) return "0 Б";
+  const units = ["Б", "КБ", "МБ", "ГБ"];
+  let i = 0;
+  let v = bytes;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
 function renderClient(c) {
   const cfg = c.config;
   const div = document.createElement("div");
@@ -161,12 +239,21 @@ function renderClient(c) {
   const meta = document.createElement("div");
   meta.className = "client-meta";
   meta.textContent = `${transportLabel(cfg.transport)} · id: ${cfg.id}`;
+  if (cfg.psk_file) {
+    const badge = document.createElement("span");
+    badge.className = "psk-badge";
+    badge.textContent = "🔒 PSK";
+    badge.title = cfg.psk_file;
+    meta.appendChild(badge);
+  }
   info.appendChild(meta);
 
   if (c.status === "running" && c.stats) {
     const stats = document.createElement("div");
     stats.className = "client-stats";
-    stats.textContent = `аптайм ${formatUptime(c.stats.UptimeSeconds)} · активных: ${c.stats.Established} · ретрансм.: ${c.stats.Retransmits}`;
+    stats.textContent =
+      `аптайм ${formatUptime(c.stats.UptimeSeconds)} · активных: ${c.stats.Established} · ретрансм.: ${c.stats.Retransmits}` +
+      ` · ↑${formatBytes(c.bytes_sent)} ↓${formatBytes(c.bytes_received)}`;
     info.appendChild(stats);
   }
 
@@ -178,6 +265,15 @@ function renderClient(c) {
   }
 
   div.appendChild(info);
+
+  const actions = document.createElement("div");
+  actions.className = "client-actions";
+
+  const editBtn = document.createElement("button");
+  editBtn.className = "ghost small";
+  editBtn.textContent = "Изменить";
+  editBtn.addEventListener("click", () => openEditModal(c));
+  actions.appendChild(editBtn);
 
   const removeBtn = document.createElement("button");
   removeBtn.className = "remove-btn";
@@ -191,7 +287,9 @@ function renderClient(c) {
       alert("Не удалось удалить: " + err.message);
     }
   });
-  div.appendChild(removeBtn);
+  actions.appendChild(removeBtn);
+
+  div.appendChild(actions);
 
   return div;
 }

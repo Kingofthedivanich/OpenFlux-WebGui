@@ -150,6 +150,95 @@ func TestManagerRemoveClientStopsTransport(t *testing.T) {
 	}
 }
 
+func TestManagerUpdateClientReplacesConfigAndStopsOldTransport(t *testing.T) {
+	var last *stubTransport
+	builder := func(cfg ClientConfig, base transport.TransportConfig) (transport.Transport, error) {
+		last = &stubTransport{}
+		return last, nil
+	}
+	m := NewManagerWithBuilder(nil, builder)
+	if err := m.AddClient(validConfig("c1")); err != nil {
+		t.Fatalf("AddClient: %v", err)
+	}
+	first := last
+
+	updated := validConfig("c1")
+	updated.URL = "https://disk.yandex.com/i/changed"
+	if err := m.UpdateClient("c1", updated); err != nil {
+		t.Fatalf("UpdateClient: %v", err)
+	}
+
+	if !first.stopped {
+		t.Fatal("old transport was not stopped on update")
+	}
+	status, ok := m.Get("c1")
+	if !ok {
+		t.Fatal("client missing after update")
+	}
+	if status.Config.URL != "https://disk.yandex.com/i/changed" {
+		t.Fatalf("URL = %q, want the updated URL", status.Config.URL)
+	}
+}
+
+func TestManagerUpdateClientRejectsMissingID(t *testing.T) {
+	m := NewManagerWithBuilder(nil, stubBuilder(false))
+	if err := m.UpdateClient("does-not-exist", validConfig("does-not-exist")); err == nil {
+		t.Fatal("expected an error updating a client that was never added")
+	}
+}
+
+// Mirrors TestManagerAddClientRecordsStartFailure: an update whose new
+// config fails to start must leave the client visibly broken, not silently
+// keep the old (now-stopped) transport running or vanish.
+func TestManagerUpdateClientRecordsStartFailure(t *testing.T) {
+	m := NewManagerWithBuilder(nil, stubBuilder(false))
+	if err := m.AddClient(validConfig("c1")); err != nil {
+		t.Fatalf("AddClient: %v", err)
+	}
+
+	m.buildTransport = func(cfg ClientConfig, base transport.TransportConfig) (transport.Transport, error) {
+		return &stubTransport{startErr: fmt.Errorf("simulated connect failure")}, nil
+	}
+	if err := m.UpdateClient("c1", validConfig("c1")); err == nil {
+		t.Fatal("expected UpdateClient to return the start error")
+	}
+
+	status, ok := m.Get("c1")
+	if !ok {
+		t.Fatal("client should still be registered after a failed update")
+	}
+	if status.Status != "error" {
+		t.Fatalf("status = %q, want error", status.Status)
+	}
+}
+
+func TestManagerUpdateClientPersists(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(filepath.Join(dir, "clients.json"))
+
+	m1 := NewManagerWithBuilder(store, stubBuilder(false))
+	if err := m1.AddClient(validConfig("c1")); err != nil {
+		t.Fatalf("AddClient: %v", err)
+	}
+	updated := validConfig("c1")
+	updated.Name = "renamed"
+	if err := m1.UpdateClient("c1", updated); err != nil {
+		t.Fatalf("UpdateClient: %v", err)
+	}
+
+	m2 := NewManagerWithBuilder(store, stubBuilder(false))
+	if err := m2.LoadPersisted(); err != nil {
+		t.Fatalf("LoadPersisted: %v", err)
+	}
+	status, ok := m2.Get("c1")
+	if !ok {
+		t.Fatal("updated client was not restored into m2 from the store")
+	}
+	if status.Config.Name != "renamed" {
+		t.Fatalf("Name = %q, want %q", status.Config.Name, "renamed")
+	}
+}
+
 func TestManagerPersistsAcrossReload(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(filepath.Join(dir, "clients.json"))

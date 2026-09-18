@@ -563,7 +563,7 @@ func runExitPanel(addr, user, pass, dataPath, keyFile string) {
 		log.Fatalf("panel: load persisted clients: %v", err)
 	}
 
-	srv := panel.NewServer(mgr, user, pass)
+	srv := panel.NewServer(mgr, user, pass, pub)
 	httpSrv := &http.Server{Addr: addr, Handler: srv}
 
 	log.Printf("Running as EXIT NODE PANEL (l4, multi-client)")
