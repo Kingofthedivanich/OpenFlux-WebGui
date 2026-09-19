@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 
 	"openflux/exitmgr"
 	"openflux/yandexdisk"
@@ -25,33 +27,48 @@ const sessionCookieName = "openflux_session"
 // http.ListenAndServe (or similar) yourself -- Server does not own the
 // listener, so callers control bind address/TLS/etc.
 type Server struct {
-	mgr        *exitmgr.Manager
-	sessions   *sessionStore
-	user       string
-	pass       string
-	publicKey  string
-	yandexDisk *yandexdisk.Client // nil when --yandex-token-file wasn't set
-	mux        *http.ServeMux
+	mgr       *exitmgr.Manager
+	sessions  *sessionStore
+	user      string
+	pass      string
+	publicKey string
+	mux       *http.ServeMux
+
+	// yandexTokenFile is where the Yandex OAuth token is persisted, so a
+	// token pasted into the panel's UI survives a restart the same way the
+	// panel-key/client files do. Empty when --yandex-token-file wasn't
+	// passed at all, which disables the feature (no card, no button) --
+	// distinct from the file existing but being empty/absent, which just
+	// means no token is set yet.
+	yandexTokenFile string
+	yandexMu        sync.RWMutex
+	yandexDisk      *yandexdisk.Client // nil until a token is configured
 }
 
 // NewServer builds the panel's HTTP handler. publicKey is the panel's own
 // Noise static public key (base64, printed at startup): clients need it as
 // their --peer-key, and the panel is the only place an operator should have
 // to look for it day to day, so it's also served over /api/panel-key.
-// yandexToken is an optional Yandex OAuth token that, when set, lets the
-// panel generate --url documents for yandex/vyandex clients instead of an
-// operator making one by hand; pass "" to leave that feature disabled.
-func NewServer(mgr *exitmgr.Manager, user, pass, publicKey, yandexToken string) *Server {
+// yandexTokenFile is an optional path to a file holding a Yandex OAuth
+// token; when set, the panel can generate --url documents for yandex/vyandex
+// clients, and exposes a card to view/change/clear that token. Pass "" to
+// leave the whole feature disabled.
+func NewServer(mgr *exitmgr.Manager, user, pass, publicKey, yandexTokenFile string) *Server {
 	s := &Server{
-		mgr:       mgr,
-		sessions:  newSessionStore(),
-		user:      user,
-		pass:      pass,
-		publicKey: publicKey,
-		mux:       http.NewServeMux(),
+		mgr:             mgr,
+		sessions:        newSessionStore(),
+		user:            user,
+		pass:            pass,
+		publicKey:       publicKey,
+		yandexTokenFile: yandexTokenFile,
+		mux:             http.NewServeMux(),
 	}
-	if yandexToken != "" {
-		s.yandexDisk = yandexdisk.New(yandexToken)
+	if yandexTokenFile != "" {
+		if data, err := os.ReadFile(yandexTokenFile); err == nil {
+			if token := strings.TrimSpace(string(data)); token != "" {
+				s.yandexDisk = yandexdisk.New(token)
+			}
+		}
 	}
 	s.routes()
 	return s
@@ -76,6 +93,8 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /api/yandex-doc-available", s.requireAuth(s.handleYandexDocAvailable))
 	s.mux.HandleFunc("POST /api/yandex-doc", s.requireAuth(s.handleGenerateYandexDoc))
+	s.mux.HandleFunc("PUT /api/yandex-token", s.requireAuth(s.handleSetYandexToken))
+	s.mux.HandleFunc("DELETE /api/yandex-token", s.requireAuth(s.handleClearYandexToken))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {

@@ -139,7 +139,7 @@ func main() {
 	panelKeyFile := flag.String("panel-key-file", "openflux-panel.key", "--role=exit-panel: Noise static key file, created on first run. The public key is printed at startup; every client shares it")
 	telegramBotToken := flag.String("telegram-bot-token", "", "--role=exit-panel: Telegram bot token for the admin bot (optional; from @BotFather)")
 	telegramAdminIDs := flag.String("telegram-admin-ids", "", "--role=exit-panel: comma-separated Telegram user ids allowed to use the bot (required if --telegram-bot-token is set)")
-	yandexTokenFile := flag.String("yandex-token-file", "", "--role=exit-panel: file with a Yandex OAuth token (disk.write scope), enables generating --url documents from the panel instead of making them by hand")
+	yandexTokenFile := flag.String("yandex-token-file", "", "--role=exit-panel: path to store a Yandex OAuth token (disk.write+disk.read scope) at; enables a panel card to set/change/clear it and a button to generate --url documents instead of making them by hand. The file need not exist yet -- the panel can create it from the UI")
 
 	benchBytes := flag.Int("bench-bytes", 0, "Benchmark: push this many MB through the transport, then report and exit")
 	benchCompressible := flag.Bool("bench-compressible", false, "Benchmark: use compressible payload instead of random")
@@ -211,9 +211,10 @@ ADMIN PANEL  (only with --role=exit-panel; always l4, one tunnel per client)
                                no SSH tunnel needed). Token from @BotFather.
       --telegram-admin-ids=<ids> Comma-separated Telegram user ids allowed to use
                                the bot. Required together with --telegram-bot-token.
-      --yandex-token-file=<path> Optional: file with a Yandex OAuth token
-                               (disk.write scope). Lets the panel generate a
-                               --url document instead of making one by hand.
+      --yandex-token-file=<path> Optional: where to keep a Yandex OAuth token.
+                               Adds a panel card to set/change/clear it and a
+                               button to generate a --url document instead of
+                               making one by hand. Need not exist yet.
 
 TRANSPORT MODIFIERS
   -c, --codec=batched          zstd + coalescing. Default.
@@ -565,22 +566,13 @@ func runExitPanel(addr, user, pass, dataPath, keyFile, telegramBotToken, telegra
 	}
 	fmt.Printf("\n=== PANEL PUBLIC KEY (%s %s) ===\n%s\nStart clients with --peer-key=%s\n\n", state, keyFile, pub, pub)
 
-	var yandexToken string
-	if yandexTokenFile != "" {
-		data, err := os.ReadFile(yandexTokenFile)
-		if err != nil {
-			log.Fatalf("--yandex-token-file: %v", err)
-		}
-		yandexToken = strings.TrimSpace(string(data))
-	}
-
 	store := exitmgr.NewStore(dataPath)
 	mgr := exitmgr.NewManager(store, key)
 	if err := mgr.LoadPersisted(); err != nil {
 		log.Fatalf("panel: load persisted clients: %v", err)
 	}
 
-	srv := panel.NewServer(mgr, user, pass, pub, yandexToken)
+	srv := panel.NewServer(mgr, user, pass, pub, yandexTokenFile)
 	httpSrv := &http.Server{Addr: addr, Handler: srv}
 
 	log.Printf("Running as EXIT NODE PANEL (l4, multi-client)")

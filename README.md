@@ -373,17 +373,20 @@ url/token, the panel's public key, and its PSK if any) -- no manual copying.
     --yandex-token-file=./yandex.token
 ```
 
-With a token configured, the yandex/vyandex url field in "Add client" gets a
-**Сгенерировать** button: it creates a blank document on that Yandex
-account's Disk, publishes it, and fills in its public link -- no more making
-one by hand in the browser and copying the share URL. Click it again to add
-another document to the same client (multi-stream).
+`--yandex-token-file` just says where the token lives -- the file doesn't
+need to exist yet. Passing it adds a card below the panel's public key to
+set, replace, or clear the token from the UI itself, with no restart needed
+either way. Once a token is set, the yandex/vyandex url field in "Add
+client" gets a **Сгенерировать** button: it creates a blank document on
+that Yandex account's Disk, publishes it, and fills in its public link --
+no more making one by hand in the browser and copying the share URL. Click
+it again to add another document to the same client (multi-stream).
 
 Get a token from [oauth.yandex.ru](https://oauth.yandex.ru/client/new):
 create an app with the "Yandex.Disk REST API" permission (write access),
 then open `https://oauth.yandex.ru/authorize?response_type=token&client_id=<your client id>`,
-approve it, and copy the `access_token` from the resulting redirect URL into
-`--yandex-token-file`. This is the same official Disk API real Yandex Docs
+approve it, and paste the `access_token` from the resulting page into the
+panel's card. This is the same official Disk API real Yandex Docs
 apps use -- unrelated to how `transport/yandex` itself talks to a document
 (an unauthenticated scrape of the public editor page), so the token is only
 ever used to create+publish documents, never to move traffic.

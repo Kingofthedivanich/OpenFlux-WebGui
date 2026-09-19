@@ -35,6 +35,13 @@ const qrCloseBtn = document.getElementById("qr-close-btn");
 const panelKeyValue = document.getElementById("panel-key-value");
 const panelKeyCopyBtn = document.getElementById("panel-key-copy");
 
+const yandexTokenCard = document.getElementById("yandex-token-card");
+const yandexTokenStatus = document.getElementById("yandex-token-status");
+const yandexTokenInput = document.getElementById("yandex-token-input");
+const yandexTokenSaveBtn = document.getElementById("yandex-token-save");
+const yandexTokenClearBtn = document.getElementById("yandex-token-clear");
+const yandexTokenError = document.getElementById("yandex-token-error");
+
 let pollTimer = null;
 // Client id being edited, or null when the modal is in "add" mode.
 let editingID = null;
@@ -65,13 +72,52 @@ function showDashboard() {
 
 async function loadYandexDocAvailability() {
   try {
-    const { available } = await api("/api/yandex-doc-available");
+    const { available, configured } = await api("/api/yandex-doc-available");
     yandexDocAvailable = !!available;
+    yandexTokenCard.style.display = configured ? "block" : "none";
+    yandexTokenStatus.textContent = available
+      ? "Токен настроен. Вставь новый, чтобы заменить."
+      : "Токен не задан — документы --url создавать нельзя, только вручную.";
   } catch (_) {
     yandexDocAvailable = false;
+    yandexTokenCard.style.display = "none";
   }
   fieldsForTransport(transportSelect.value);
 }
+
+yandexTokenSaveBtn.addEventListener("click", async () => {
+  yandexTokenError.textContent = "";
+  const token = yandexTokenInput.value.trim();
+  if (!token) {
+    yandexTokenError.textContent = "Вставь токен перед сохранением.";
+    return;
+  }
+  yandexTokenSaveBtn.disabled = true;
+  try {
+    await api("/api/yandex-token", { method: "PUT", body: JSON.stringify({ token }) });
+    yandexTokenInput.value = "";
+    await loadYandexDocAvailability();
+  } catch (err) {
+    yandexTokenError.textContent = "Не удалось сохранить: " + err.message;
+  } finally {
+    yandexTokenSaveBtn.disabled = false;
+  }
+});
+
+yandexTokenClearBtn.addEventListener("click", async () => {
+  yandexTokenError.textContent = "";
+  if (!confirm("Отключить генерацию документов и удалить сохранённый токен?")) return;
+  yandexTokenClearBtn.disabled = true;
+  try {
+    await api("/api/yandex-token", { method: "DELETE" });
+    yandexTokenInput.value = "";
+    await loadYandexDocAvailability();
+  } catch (err) {
+    yandexTokenError.textContent = "Не удалось отключить: " + err.message;
+  } finally {
+    yandexTokenClearBtn.disabled = false;
+  }
+});
 
 async function loadPanelKey() {
   try {

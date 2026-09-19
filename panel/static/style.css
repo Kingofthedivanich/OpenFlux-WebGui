@@ -103,6 +103,9 @@ main { padding: 24px 28px; max-width: 900px; margin: 0 auto; }
 }
 .panel-key-label { color: var(--text-muted); font-size: 12px; margin-bottom: 8px; }
 .panel-key-row { display: flex; align-items: center; gap: 10px; }
+.panel-key-row input { flex: 1; min-width: 0; }
+#yandex-token-status { margin-bottom: 8px; }
+#yandex-token-error { margin-top: 8px; }
 .panel-key-row code {
   flex: 1;
   min-width: 0;
