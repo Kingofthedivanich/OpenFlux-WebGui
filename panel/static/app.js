@@ -23,6 +23,11 @@ const submitBtn = document.getElementById("add-submit-btn");
 const clientsList = document.getElementById("clients-list");
 const clientsEmpty = document.getElementById("clients-empty");
 
+const qrModal = document.getElementById("qr-modal");
+const qrImage = document.getElementById("qr-image");
+const qrError = document.getElementById("qr-error");
+const qrCloseBtn = document.getElementById("qr-close-btn");
+
 const panelKeyValue = document.getElementById("panel-key-value");
 const panelKeyCopyBtn = document.getElementById("panel-key-copy");
 
@@ -201,6 +206,37 @@ addForm.addEventListener("submit", async (e) => {
   }
 });
 
+let qrObjectURL = null;
+
+async function openQRModal(cfg) {
+  qrError.textContent = "";
+  qrImage.style.display = "none";
+  qrModal.style.display = "flex";
+  if (qrObjectURL) { URL.revokeObjectURL(qrObjectURL); qrObjectURL = null; }
+
+  try {
+    const res = await fetch(`/api/clients/${encodeURIComponent(cfg.id)}/qr`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error((body && body.error) || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    qrObjectURL = URL.createObjectURL(blob);
+    qrImage.src = qrObjectURL;
+    qrImage.style.display = "block";
+  } catch (err) {
+    qrError.textContent = "Не удалось получить QR: " + err.message;
+  }
+}
+
+function closeQRModal() {
+  qrModal.style.display = "none";
+  if (qrObjectURL) { URL.revokeObjectURL(qrObjectURL); qrObjectURL = null; }
+}
+
+qrCloseBtn.addEventListener("click", closeQRModal);
+qrModal.addEventListener("click", (e) => { if (e.target === qrModal) closeQRModal(); });
+
 function transportLabel(t) {
   return {
     yandex: "Yandex.Docs",
@@ -295,6 +331,12 @@ function renderClient(c) {
 
   const actions = document.createElement("div");
   actions.className = "client-actions";
+
+  const qrBtn = document.createElement("button");
+  qrBtn.className = "ghost small";
+  qrBtn.textContent = "QR";
+  qrBtn.addEventListener("click", () => openQRModal(cfg));
+  actions.appendChild(qrBtn);
 
   const editBtn = document.createElement("button");
   editBtn.className = "ghost small";
