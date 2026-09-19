@@ -64,6 +64,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clients", s.requireAuth(s.handleAddClient))
 	s.mux.HandleFunc("PUT /api/clients/{id}", s.requireAuth(s.handleUpdateClient))
 	s.mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuth(s.handleRemoveClient))
+	s.mux.HandleFunc("GET /api/clients/{id}/qr", s.requireAuth(s.handleClientQR))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {

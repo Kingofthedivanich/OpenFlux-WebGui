@@ -356,6 +356,10 @@ and printed at startup; every client shares this same identity and connects
 with `--peer-key=<that public key>`. Adding a client in the UI accepts an
 optional PSK file to close just that one client to anyone without the secret.
 
+Every client card has a **QR** button: scan it with the Android app's "+"
+button and it imports and configures that client automatically (transport,
+url/token, the panel's public key, and its PSK if any) -- no manual copying.
+
 #### Telegram admin bot (optional)
 
 ```

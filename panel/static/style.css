@@ -202,6 +202,19 @@ main { padding: 24px 28px; max-width: 900px; margin: 0 auto; }
   gap: 12px;
 }
 
+.qr-card {
+  align-items: center;
+  text-align: center;
+}
+
+.qr-card #qr-image {
+  width: 256px;
+  height: 256px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 8px;
+}
+
 .field-group { display: flex; flex-direction: column; gap: 12px; }
 
 .modal-actions {
