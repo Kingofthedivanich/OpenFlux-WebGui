@@ -14,14 +14,13 @@ import (
 	"io"
 	"net"
 	"runtime/debug"
-	"strconv"
 	"sync"
 	"time"
 	"unsafe"
 
+	"openflux/internal/encryptionsetup"
 	"openflux/internal/network"
 	"openflux/internal/transport"
-	"openflux/internal/transport/oneme"
 	"openflux/internal/utils"
 )
 
@@ -71,25 +70,19 @@ func OpenFluxStartPacketTunnel(transportType, url, maxToken, maxUid *C.char) (rc
 	debug.SetMemoryLimit(40 << 20)
 	debug.SetGCPercent(20)
 
-	enc, err := newEncryptionSetup(bridgeEncryptionOptions(), true)
+	enc, err := encryptionsetup.New(bridgeEncryptionOptions(), true)
 	if err != nil {
 		utils.Debugf("[PKT] Encryption: %v", err)
 		return C.int(startBadEncryption)
 	}
 
 	config := transport.DefaultConfig()
-	var t transport.Transport
-	switch tt {
-	case "yandex", "", "vyandex":
-		t, err = newBridgeDocStreams(tt, docURL, enc, config)
-	case "oneme":
-		uidint, _ := strconv.ParseInt(mUid, 10, 64)
-		t, err = newBridgeStream(oneme.NewOneMeTransport(false, mToken, uidint, config), enc)
-	default:
-		return C.int(startBadTransport)
-	}
+	t, err := buildBridgeTransport(tt, docURL, mToken, mUid, enc, config)
 	if err != nil {
-		utils.Debugf("[PKT] Configure encrypted transport: %v", err)
+		utils.Debugf("[PKT] Configure transport: %v", err)
+		if tt != "" && tt != "yandex" && tt != "vyandex" && tt != "oneme" {
+			return C.int(startBadTransport)
+		}
 		return C.int(startBadEncryption)
 	}
 
@@ -182,8 +175,8 @@ func sendICMPPortUnreachable(orig []byte, outQ chan []byte) {
 	ip := make([]byte, total)
 	ip[0] = 0x45
 	binary.BigEndian.PutUint16(ip[2:4], uint16(total))
-	ip[8] = 64 // TTL
-	ip[9] = 1  // ICMP
+	ip[8] = 64                   // TTL
+	ip[9] = 1                    // ICMP
 	copy(ip[12:16], orig[16:20]) // src = original destination
 	copy(ip[16:20], orig[12:16]) // dst = original source (the device)
 	ck2 := network.IPChecksum(ip[:20])
@@ -275,8 +268,8 @@ func handleDNSPacket(req []byte, outQ chan []byte) {
 	resp[0] = req[0]
 	resp[1] = req[1]
 	binary.BigEndian.PutUint16(resp[2:4], uint16(total))
-	resp[8] = 64 // TTL
-	resp[9] = 17 // UDP
+	resp[8] = 64              // TTL
+	resp[9] = 17              // UDP
 	copy(resp[12:16], dstIP)  // src = original destination (the resolver)
 	copy(resp[16:20], srcIP)  // dst = the device
 	resp[10], resp[11] = 0, 0 // checksum field

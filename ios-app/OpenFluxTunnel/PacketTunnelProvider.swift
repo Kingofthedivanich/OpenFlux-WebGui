@@ -36,6 +36,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let url = (conf["url"] as? String) ?? ""
         let maxToken = (conf["maxToken"] as? String) ?? ""
         let maxUid = (conf["maxUid"] as? String) ?? ""
+        let peerKey = ((conf["peerKey"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let psk = (conf["psk"] as? String) ?? ""
+
+        peerKey.withCString { k in OpenFluxSetPeerKey(UnsafeMutablePointer(mutating: k)) }
+        psk.withCString { s in OpenFluxSetPSK(UnsafeMutablePointer(mutating: s)) }
+        OpenFluxSetAllowPlaintext(peerKey.isEmpty ? 1 : 0)
 
         // Virtual interface: capture all IPv4 + all DNS.
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")

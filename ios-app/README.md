@@ -14,6 +14,12 @@ SOCKS5 tunnel over the Yandex.Docs transport on `127.0.0.1:1080`.
 - `OpenFluxStop()` — stop transport + SOCKS5 listener.
 - `OpenFluxIsRunning()` / `OpenFluxIsConnected()` — state.
 - `OpenFluxStatsJSON()` / `OpenFluxReadLog()` — stats + log tail (free with `OpenFluxFreeString`).
+- `OpenFluxSetPeerKey(key)` / `OpenFluxSetPSK(secret)` / `OpenFluxSetAllowPlaintext(on)` —
+  optional encryption, matching `--peer-key`/`--psk-file`/`--allow-plaintext` on the CLI.
+  Call before `OpenFluxStartClient`; an empty peer key means plaintext. The
+  packet-tunnel extension (`OpenFluxStartPacketTunnel`) reads the same three
+  setters, since it runs in its own process and doesn't share state with the
+  app -- `VPNController` passes peer key/PSK through `providerConfiguration`.
 
 ## Build + archive + export (one command)
 From the repo root:
@@ -39,9 +45,9 @@ Produces `ios-app/build/export/OpenFlux.ipa`, distribution-signed for the App St
 3. The build appears in TestFlight after Apple processing (a few minutes).
 
 ## Notes / follow-ups
-- The app runs a **local** SOCKS5 proxy. The in-app **Test** button proves the
-  tunnel carries traffic (fetches the exit IP through the proxy). Routing the
-  whole device requires a Network Extension (`NEPacketTunnelProvider`) target
-  with the Network Extensions capability — not included in this first build.
+- Two ways to run the tunnel: a **local** SOCKS5 proxy (the in-app **Test**
+  button fetches the exit IP through it to prove traffic flows), or the
+  **System VPN** toggle, which installs a `NEPacketTunnelProvider` extension
+  (`OpenFluxTunnel/`) that routes the whole device.
 - Deployment target: iOS 15.0 (SwiftUI App lifecycle). The Go lib is built with
   `-miphoneos-version-min=13.0`, so it is compatible.
