@@ -36,8 +36,17 @@ BIN_PATH="$SCRIPT_DIR/openflux"
 PANEL_ADDR="127.0.0.1:8088"
 PANEL_USER=""
 PANEL_PASS=""
-PANEL_DATA="$SCRIPT_DIR/clients.json"
-PANEL_KEY_FILE="$SCRIPT_DIR/panel.key"
+# Match main.go's own flag defaults exactly (openflux-clients.json /
+# openflux-panel.key) -- these are the paths a deployment gets if
+# --panel-data/--panel-key-file were never explicitly passed. A mismatch
+# here isn't cosmetic: detect_from_override only fills these vars in when
+# the flag is actually present in ExecStart, so an implicit-default
+# deployment falls through to whatever's hardcoded here. Get it wrong and
+# apply_override switches to a *different* key/registry file -- for
+# --panel-key-file specifically, that means a brand new Noise keypair,
+# silently orphaning every client's peer-key.
+PANEL_DATA="$SCRIPT_DIR/openflux-clients.json"
+PANEL_KEY_FILE="$SCRIPT_DIR/openflux-panel.key"
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_ADMIN_IDS=""
 YANDEX_TOKEN_FILE=""
@@ -193,6 +202,22 @@ apply_override() {
         exec_start="$exec_start $(sdarg --yandex-token-file "$YANDEX_TOKEN_FILE")"
     fi
 
+    # A missing key file isn't wrong on a genuinely first-ever start (the
+    # binary creates one), but on a service that's already been running
+    # it almost always means PANEL_KEY_FILE just got pointed at the wrong
+    # path -- which silently mints a brand new Noise keypair and orphans
+    # every existing client's --peer-key. Confirm before restarting into
+    # that, rather than discovering it from "the app doesn't get internet".
+    if [ ! -f "$PANEL_KEY_FILE" ] && systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+        echo "warning: $SERVICE is already running, but $PANEL_KEY_FILE doesn't exist." >&2
+        echo "Restarting with this path will generate a NEW key and disconnect every existing client." >&2
+        read -rp "Continue anyway? Type 'yes' to confirm: " confirm_key
+        if [ "$confirm_key" != "yes" ]; then
+            echo "cancelled -- not restarting."
+            return 1
+        fi
+    fi
+
     cat >"$dir/override.conf" <<EOF
 [Service]
 ExecStart=
@@ -204,6 +229,13 @@ EOF
     sleep 1
     if systemctl is-active --quiet "$SERVICE"; then
         echo "OK: $SERVICE is running."
+        # Belt-and-suspenders: catch a new key even if the pre-check above
+        # missed it for some other reason (e.g. a typo'd path that
+        # happens to exist but isn't the real key).
+        if journalctl -u "$SERVICE" --no-pager -n 5 | grep -qF 'PANEL PUBLIC KEY (generated and saved to'; then
+            echo "WARNING: a NEW Noise key was just generated -- every existing client's" >&2
+            echo "--peer-key is now stale. Re-check option 6 and re-add/re-scan clients." >&2
+        fi
     else
         echo "error: $SERVICE did not come up healthy. Recent logs:" >&2
         journalctl -u "$SERVICE" -n 20 --no-pager >&2
