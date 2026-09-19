@@ -19,10 +19,7 @@ import (
 	"openflux/socks5"
 	"openflux/telegrambot"
 	"openflux/transport"
-	"openflux/transport/cupsonline"
-	"openflux/transport/mailru"
-	"openflux/transport/oneme"
-	"openflux/transport/yandex"
+	"openflux/transportstack"
 	"openflux/tunnel"
 	"openflux/tunnel/l3"
 	"openflux/utils"
@@ -435,16 +432,26 @@ DEPRECATED (removed in v2)
 		log.Printf("Codec: legacy (per-packet LZ4, no batching)")
 	}
 
-	urls := splitURLs(globalDocUrl)
-	if len(urls) > 1 && !supportsMultiStream(*transportType) {
-		log.Fatalf("--url: several documents are supported with --transport=yandex or vyandex, not %s", *transportType)
+	var encryptFn func(transport.Transport) (transport.Transport, error)
+	if enc != nil {
+		encryptFn = enc.wrap
 	}
-
-	// Every document gets a complete stream of its own (transport, encryption,
-	// codec), so each carries exactly the single-document wire format.
-	trans := newDocStreams(urls, func(docURL string) transport.Transport {
-		return newStream(*transportType, docURL, *role, *codec, enc, config)
-	})
+	trans, err := transportstack.Build(transportstack.Params{
+		TransportType: *transportType,
+		URL:           globalDocUrl,
+		IsExit:        *role == roleExit,
+		MaxToken:      maxToken,
+		MaxUid:        maxUid,
+		Codec:         *codec,
+		Encrypt:       encryptFn,
+	}, config)
+	if err != nil {
+		log.Fatalf("transport: %v", err)
+	}
+	ms, isMultiStream := trans.(*transport.MultiStreamTransport)
+	if isMultiStream {
+		log.Printf("Multi-stream: %d documents", len(ms.Streams()))
+	}
 
 	// Benchmark modes run the transport directly with no tunnel / raw socket,
 	// so they never touch the host network.
@@ -460,8 +467,8 @@ DEPRECATED (removed in v2)
 		return
 	}
 
-	if ms, ok := trans.(*transport.MultiStreamTransport); ok && *statusEvery > 0 {
-		go multistreamStatusLoop(ms, urls, *statusEvery)
+	if isMultiStream && *statusEvery > 0 {
+		go multistreamStatusLoop(ms, transportstack.SplitURLs(globalDocUrl), *statusEvery)
 	}
 
 	switch *role {
@@ -472,48 +479,6 @@ DEPRECATED (removed in v2)
 	default:
 		log.Fatalf("unhandled role %q", *role)
 	}
-}
-
-// newStream builds the transport stack for one document: the raw transport,
-// optional encryption directly on it, and the app-layer codec outermost.
-func newStream(transportType, docURL, role, codec string, enc *encryptionSetup, config transport.TransportConfig) transport.Transport {
-	var inner transport.Transport
-	switch transportType {
-	case "vyandex":
-		inner = yandex.NewYandexVolgaTransport(docURL, config)
-	case "yandex":
-		inner = yandex.NewYandexDocsTransport(docURL, config)
-	case "oneme":
-		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
-		inner = oneme.NewOneMeTransport(role == roleExit, maxToken, uidint, config)
-	case "cupsonline":
-		inner = cupsonline.NewCupsonlineTransport(docURL, config, role != roleExit)
-	case "mailru":
-		inner = mailru.NewMailruDocsTransport(docURL, config)
-	default:
-		log.Fatalf("Unknown transport type: %s", transportType)
-	}
-
-	// Optional encryption sits on the raw transport, under the codec, so one
-	// AEAD covers a whole compressed batch.
-	if enc != nil {
-		encrypted, err := enc.wrap(inner)
-		if err != nil {
-			log.Fatalf("Configure encrypted transport: %v", err)
-		}
-		inner = encrypted
-	}
-
-	// App-layer codec. Default is the batching+zstd layer; --codec=legacy
-	// selects the old per-packet LZ4 path so the two can be compared over the
-	// same channel. Client and exit node must use the same one.
-	switch codec {
-	case codecBatched:
-		inner = transport.NewBatchedTransport(inner)
-	case codecLegacy:
-		inner = transport.NewCompressedTransport(inner)
-	}
-	return inner
 }
 
 func runExit(trans transport.Transport, exitMode tunnel.ExitMode, upstreamProxy string) {
