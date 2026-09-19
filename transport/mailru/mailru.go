@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -189,7 +190,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		headers.Set("User-Agent", mailruUserAgent)
 		headers.Set("Origin", "https://docs.datacloudmail.ru")
 
-		utils.Debugf("[M-DOCS] WebSocket dial %s", info.WsURL)
+		utils.Debugf("[M-DOCS] WebSocket dial %s", maskMailruURL(info.WsURL))
 		conn, resp, err := dialer.Dial(info.WsURL, headers)
 		if err != nil {
 			status := 0
@@ -297,6 +298,17 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			t.handleMessage(session, message)
 		}
 	}()
+}
+
+// maskMailruURL hides the document key and query parameters. Debug logs are
+// routinely pasted into issue reports; the complete editor URL grants access
+// to the shared document session.
+func maskMailruURL(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "<url>"
+	}
+	return u.Scheme + "://" + u.Host + "/<redacted>"
 }
 
 func (t *MailruDocsTransport) writerLoop() {
