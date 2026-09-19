@@ -3,57 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
 	"openflux/transport"
 )
-
-// splitURLs splits a comma-separated --url value into document URLs, trimmed,
-// de-duplicated and sorted. Sorting gives both peers the same stream order
-// whatever order the URLs were typed in, so they route a connection over the
-// same document. Duplicates must go: two sessions of one peer in the same
-// document would receive each other's packets. An empty value yields [""] so
-// callers can always use urls[0].
-func splitURLs(raw string) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, p := range strings.Split(raw, ",") {
-		p = strings.TrimSpace(p)
-		if p != "" && !seen[p] {
-			seen[p] = true
-			out = append(out, p)
-		}
-	}
-	if len(out) == 0 {
-		return []string{""}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// supportsMultiStream reports whether a transport takes one document per
-// stream. cupsonline carries its rooms inside one URL, oneme has no URL, and
-// mailru has not been tested with several documents.
-func supportsMultiStream(transportType string) bool {
-	return transportType == "yandex" || transportType == "vyandex"
-}
-
-// newDocStreams builds the transport for urls: the stream itself for a single
-// URL (exactly the single-document behavior), or a MultiStreamTransport over
-// one complete stream per document. mk builds the stream for one URL.
-func newDocStreams(urls []string, mk func(url string) transport.Transport) transport.Transport {
-	if len(urls) <= 1 {
-		return mk(urls[0])
-	}
-	log.Printf("Multi-stream: %d documents", len(urls))
-	streams := make([]transport.Transport, 0, len(urls))
-	for _, u := range urls {
-		streams = append(streams, mk(u))
-	}
-	return transport.NewMultiStreamTransport(streams)
-}
 
 // multistreamStatusLoop logs one line per interval with each document's state:
 // UP (connected, peer heard from recently), NOPEER (connected, peer silent)

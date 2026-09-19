@@ -231,7 +231,8 @@ yourself.
 ```
 OpenFlux/
   main.go                          # CLI entry (client / exit / benches)
-  multistream.go                   # --url list parsing, multi-stream status log
+  multistream.go                   # Multi-stream status log
+  transportstack/                  # Backend+encryption+codec+multi-stream wiring, shared by main.go and exitmgr
   bench.go                         # Benchmark helpers
   tun_darwin.go                    # macOS utun L3 client
   tun_watch.go                     # Socket watcher for bypass routes

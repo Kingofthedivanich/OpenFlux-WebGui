@@ -243,7 +243,8 @@ Xcode нужен только для цели `export_ios.go` под `//go:build
 ```
 OpenFlux/
   main.go                          # Точка входа CLI (клиент / exit / бенчи)
-  multistream.go                   # Разбор списка --url, статус мульти-стрима
+  multistream.go                   # Статус-лог мульти-стрима
+  transportstack/                  # Сборка backend+шифрование+кодек+multi-stream, общая для main.go и exitmgr
   bench.go                         # Хелперы бенчмарка
   tun_darwin.go                    # macOS utun L3-клиент
   tun_watch.go                     # Watcher сокетов для bypass-маршрутов
