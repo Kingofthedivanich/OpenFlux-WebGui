@@ -101,9 +101,11 @@ systemd-юнита.
 `--allow-plaintext` отключает шифрование.
 
 Готовые клиенты: [Android](https://github.com/Kingofthedivanich/OpenFluxAndroid/releases)
-(клиент этого форка), [iOS TestFlight](https://testflight.apple.com/join/BwnAcdus)
-(клиент апстрима, не в паре с шифрованием этого форка — нужен
-`--allow-plaintext`). macOS/Linux/Windows: собирай из исходников выше.
+(клиент этого форка). [iOS](https://github.com/Kingofthedivanich/OpenFluxiOS) —
+тоже клиент этого форка (пока только исходники, собирать самому);
+[TestFlight апстрима](https://testflight.apple.com/join/BwnAcdus) тоже
+работает, но не в паре с шифрованием этого форка — нужен
+`--allow-plaintext`. macOS/Linux/Windows: собирай из исходников выше.
 
 Полный список флагов: `./openflux --help`.
 

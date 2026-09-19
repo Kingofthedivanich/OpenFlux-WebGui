@@ -97,9 +97,11 @@ key on first run — give it to clients as `--peer-key`. `--allow-plaintext`
 disables it.
 
 Prebuilt clients: [Android](https://github.com/Kingofthedivanich/OpenFluxAndroid/releases)
-(this fork's paired app), [iOS TestFlight](https://testflight.apple.com/join/BwnAcdus)
-(upstream's client, not paired with this fork's encryption — needs
-`--allow-plaintext`). macOS/Linux/Windows: build from source above.
+(this fork's paired app). [iOS](https://github.com/Kingofthedivanich/OpenFluxiOS)
+is this fork's paired client too (source only for now, build it yourself);
+[upstream's iOS TestFlight](https://testflight.apple.com/join/BwnAcdus) also
+works but isn't paired with this fork's encryption — needs
+`--allow-plaintext`. macOS/Linux/Windows: build from source above.
 
 Full flag reference: `./openflux --help`.
 
