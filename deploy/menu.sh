@@ -40,6 +40,7 @@ PANEL_DATA="$SCRIPT_DIR/clients.json"
 PANEL_KEY_FILE="$SCRIPT_DIR/panel.key"
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_ADMIN_IDS=""
+YANDEX_TOKEN_FILE=""
 
 # ---------- small helpers ----------
 
@@ -82,6 +83,7 @@ PANEL_DATA=$(printf '%q' "$PANEL_DATA")
 PANEL_KEY_FILE=$(printf '%q' "$PANEL_KEY_FILE")
 TELEGRAM_BOT_TOKEN=$(printf '%q' "$TELEGRAM_BOT_TOKEN")
 TELEGRAM_ADMIN_IDS=$(printf '%q' "$TELEGRAM_ADMIN_IDS")
+YANDEX_TOKEN_FILE=$(printf '%q' "$YANDEX_TOKEN_FILE")
 EOF
     chmod 600 "$CONFIG_FILE"
 }
@@ -105,6 +107,7 @@ detect_from_override() {
     val="$(grep -oP '(?<=--panel-key-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_KEY_FILE="$val"
     val="$(grep -oP '(?<=--telegram-bot-token=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_BOT_TOKEN="$val"
     val="$(grep -oP '(?<=--telegram-admin-ids=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_ADMIN_IDS="$val"
+    val="$(grep -oP '(?<=--yandex-token-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && YANDEX_TOKEN_FILE="$val"
 }
 
 prompt_default() {
@@ -127,6 +130,7 @@ first_time_setup() {
     while [ -z "$PANEL_PASS" ]; do PANEL_PASS="$(prompt_default "panel admin password (required)" "")"; done
     PANEL_DATA="$(prompt_default "clients registry path" "$PANEL_DATA")"
     PANEL_KEY_FILE="$(prompt_default "panel Noise key file path" "$PANEL_KEY_FILE")"
+    YANDEX_TOKEN_FILE="$(prompt_default "yandex OAuth token file path (optional -- enables the panel's document-generation card; empty disables it; the file need not exist yet)" "$YANDEX_TOKEN_FILE")"
     save_config
     echo "Saved to $CONFIG_FILE."
     pause
@@ -170,6 +174,9 @@ apply_override() {
     if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
         exec_start="$exec_start $(sdarg --telegram-bot-token "$TELEGRAM_BOT_TOKEN")"
         exec_start="$exec_start $(sdarg --telegram-admin-ids "$TELEGRAM_ADMIN_IDS")"
+    fi
+    if [ -n "$YANDEX_TOKEN_FILE" ]; then
+        exec_start="$exec_start $(sdarg --yandex-token-file "$YANDEX_TOKEN_FILE")"
     fi
 
     cat >"$dir/override.conf" <<EOF
