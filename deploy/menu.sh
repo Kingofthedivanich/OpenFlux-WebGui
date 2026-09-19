@@ -64,6 +64,18 @@ ensure_jq() {
 
 pause() { read -rp "Press Enter to continue..." _; }
 
+# Strips one leading/trailing '"' if present. apply_override wraps every
+# flag value in double quotes (systemd.syntax(7)); grep -oP '\S+' has no
+# notion of quoting, so without this every value detect_from_override reads
+# back out would carry a stray trailing '"' (and the binary path a leading
+# one too).
+strip_quotes() {
+    local v="$1"
+    v="${v%\"}"
+    v="${v#\"}"
+    printf '%s' "$v"
+}
+
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
         # shellcheck source=/dev/null
@@ -93,21 +105,22 @@ EOF
 # defaults instead of asking the operator to retype a working config.
 detect_from_override() {
     local override="/etc/systemd/system/${SERVICE}.service.d/override.conf"
-    [ -f "$override" ] || return 0
+    [ -f "$override" ] || return 1
     local line
     line="$(grep -m1 '^ExecStart=/' "$override" 2>/dev/null || true)"
-    [ -n "$line" ] || return 0
+    [ -n "$line" ] || return 1
 
     local val
-    val="$(grep -oP '(?<=^ExecStart=)\S+' <<<"$line" || true)"; [ -n "$val" ] && BIN_PATH="$val"
-    val="$(grep -oP '(?<=--panel-addr=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_ADDR="$val"
-    val="$(grep -oP '(?<=--panel-user=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_USER="$val"
-    val="$(grep -oP '(?<=--panel-pass=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_PASS="$val"
-    val="$(grep -oP '(?<=--panel-data=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_DATA="$val"
-    val="$(grep -oP '(?<=--panel-key-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_KEY_FILE="$val"
-    val="$(grep -oP '(?<=--telegram-bot-token=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_BOT_TOKEN="$val"
-    val="$(grep -oP '(?<=--telegram-admin-ids=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_ADMIN_IDS="$val"
-    val="$(grep -oP '(?<=--yandex-token-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && YANDEX_TOKEN_FILE="$val"
+    val="$(grep -oP '(?<=^ExecStart=)\S+' <<<"$line" || true)"; [ -n "$val" ] && BIN_PATH="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--panel-addr=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_ADDR="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--panel-user=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_USER="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--panel-pass=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_PASS="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--panel-data=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_DATA="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--panel-key-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_KEY_FILE="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--telegram-bot-token=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_BOT_TOKEN="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--telegram-admin-ids=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_ADMIN_IDS="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--yandex-token-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && YANDEX_TOKEN_FILE="$(strip_quotes "$val")"
+    return 0
 }
 
 prompt_default() {
@@ -132,7 +145,8 @@ first_time_setup() {
     PANEL_KEY_FILE="$(prompt_default "panel Noise key file path" "$PANEL_KEY_FILE")"
     YANDEX_TOKEN_FILE="$(prompt_default "yandex OAuth token file path (optional -- enables the panel's document-generation card; empty disables it; the file need not exist yet)" "$YANDEX_TOKEN_FILE")"
     save_config
-    echo "Saved to $CONFIG_FILE."
+    echo "Saved to $CONFIG_FILE. Applying..."
+    apply_override
     pause
 }
 
