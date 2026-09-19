@@ -18,6 +18,7 @@ const urlHint = document.getElementById("f-url-hint");
 const urlInput = document.getElementById("f-url");
 const urlGenerateBtn = document.getElementById("f-url-generate");
 const urlGenerateError = document.getElementById("f-url-generate-error");
+const urlYandexNativeNote = document.getElementById("f-url-yandex-native-note");
 const nameInput = document.getElementById("f-name");
 
 const MULTISTREAM_TRANSPORTS = new Set(["yandex", "vyandex"]);
@@ -199,10 +200,15 @@ function fieldsForTransport(t) {
     maxGroup.style.display = "none";
     if (MULTISTREAM_TRANSPORTS.has(t)) urlHint.style.display = "block";
   }
-  // Only yandex/vyandex documents can be auto-generated (that's what
-  // yandexdisk.CreateDoc produces); oneme/cupsonline/mailru don't apply.
-  const canGenerate = yandexDocAvailable && (t === "yandex" || t === "vyandex");
+  // yandexdisk.CreateDoc uploads a .docx to Disk, which Yandex always opens
+  // through its WOPI/"Volga" online-office viewer -- exactly what
+  // --transport=vyandex speaks. A plain --transport=yandex client needs a
+  // document made *natively* in the Yandex Docs UI (a different, non-WOPI
+  // editor session with no public API), so offering this button for it
+  // would just hand back a URL that connects to nothing.
+  const canGenerate = yandexDocAvailable && t === "vyandex";
   urlGenerateBtn.style.display = canGenerate ? "inline-block" : "none";
+  urlYandexNativeNote.style.display = yandexDocAvailable && t === "yandex" ? "block" : "none";
 }
 transportSelect.addEventListener("change", () => fieldsForTransport(transportSelect.value));
 fieldsForTransport(transportSelect.value);
