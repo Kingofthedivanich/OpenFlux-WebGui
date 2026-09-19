@@ -2,8 +2,10 @@ package telegrambot
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,16 +22,44 @@ type sentMessage struct {
 	KB     *inlineKeyboard
 }
 
+type sentPhoto struct {
+	ChatID  int64
+	Caption string
+	Photo   []byte
+}
+
 type fakeTelegram struct {
-	mu   sync.Mutex
-	sent []sentMessage
-	srv  *httptest.Server
+	mu     sync.Mutex
+	sent   []sentMessage
+	photos []sentPhoto
+	srv    *httptest.Server
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
 	t.Helper()
 	f := &fakeTelegram{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendPhoto") {
+			if err := r.ParseMultipartForm(10 << 20); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			chatID, _ := strconv.ParseInt(r.FormValue("chat_id"), 10, 64)
+			photoFile, _, err := r.FormFile("photo")
+			if err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			defer photoFile.Close()
+			data, _ := io.ReadAll(photoFile)
+			f.mu.Lock()
+			f.photos = append(f.photos, sentPhoto{ChatID: chatID, Caption: r.FormValue("caption"), Photo: data})
+			f.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+
 		var body struct {
 			ChatID      int64           `json:"chat_id"`
 			Text        string          `json:"text"`
@@ -49,6 +79,21 @@ func newFakeTelegram(t *testing.T) *fakeTelegram {
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+func (f *fakeTelegram) lastPhoto() sentPhoto {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.photos) == 0 {
+		return sentPhoto{}
+	}
+	return f.photos[len(f.photos)-1]
+}
+
+func (f *fakeTelegram) photoCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.photos)
 }
 
 func (f *fakeTelegram) last() sentMessage {
@@ -156,6 +201,52 @@ func TestStatusUnknownID(t *testing.T) {
 	b.handleMessage(msg(adminID, "/status nope"))
 	if got := ft.last().Text; !strings.Contains(got, "не найден") {
 		t.Fatalf("/status on unknown id = %q, want a not-found message", got)
+	}
+	if ft.photoCount() != 0 {
+		t.Fatal("no QR photo should be sent for an unknown client")
+	}
+}
+
+func TestStatusSendsClientQRPhoto(t *testing.T) {
+	b, ft := newTestBot(t)
+	if err := b.mgr.AddClient(exitmgr.ClientConfig{ID: "c1", Name: "Alice", Transport: "yandex", URL: "https://disk.yandex.com/i/x"}); err != nil {
+		t.Fatalf("AddClient: %v", err)
+	}
+
+	b.handleMessage(msg(adminID, "/status c1"))
+
+	if ft.photoCount() != 1 {
+		t.Fatalf("photoCount = %d, want 1", ft.photoCount())
+	}
+	photo := ft.lastPhoto()
+	if photo.ChatID != adminID {
+		t.Fatalf("photo chat id = %d, want %d", photo.ChatID, adminID)
+	}
+	if !strings.Contains(photo.Caption, "Alice") {
+		t.Fatalf("photo caption = %q, want it to mention Alice", photo.Caption)
+	}
+	pngMagic := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if len(photo.Photo) < len(pngMagic) || string(photo.Photo[:8]) != string(pngMagic) {
+		t.Fatal("sent photo does not start with the PNG magic bytes")
+	}
+}
+
+func TestStatusSkipsQRPhotoWhenNotBuildable(t *testing.T) {
+	b, ft := newTestBot(t)
+	// Valid to add without a url -- the exit generates cupsonline's rooms
+	// itself once started. The stub transport never populates
+	// CupsonlineRooms, so this client can never produce a QR.
+	if err := b.mgr.AddClient(exitmgr.ClientConfig{ID: "c1", Name: "Cups", Transport: "cupsonline"}); err != nil {
+		t.Fatalf("AddClient: %v", err)
+	}
+
+	b.handleMessage(msg(adminID, "/status c1"))
+
+	if ft.photoCount() != 0 {
+		t.Fatal("no QR photo should be sent when the client can't produce one yet")
+	}
+	if got := ft.last().Text; !strings.Contains(got, "Cups") {
+		t.Fatalf("status text = %q, want it to still be sent", got)
 	}
 }
 

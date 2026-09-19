@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"openflux/clientqr"
 	"openflux/exitmgr"
 )
 
@@ -129,6 +130,7 @@ func (b *Bot) handleMessage(m Message) {
 			return
 		}
 		b.send(chatID, b.formatStatus(arg))
+		b.sendClientQR(chatID, arg)
 	case "/add":
 		b.startAddWizard(chatID)
 	case "/edit":
@@ -151,7 +153,7 @@ func (b *Bot) handleMessage(m Message) {
 const helpText = `OpenFlux admin bot
 
 /list — список клиентов и их статус
-/status <id> — подробный статус одного клиента
+/status <id> — подробный статус одного клиента + QR для импорта в Android
 /key — публичный ключ панели (--peer-key)
 /add — добавить клиента (пошагово)
 /edit <id> — изменить клиента (пошагово)
@@ -223,6 +225,30 @@ func (b *Bot) formatStatus(id string) string {
 		fmt.Fprintf(&sb, "URL для клиента (--url): %s\n", c.CupsonlineRooms)
 	}
 	return sb.String()
+}
+
+// sendClientQR sends the client's QR code as a photo, for one-scan import
+// into the Android app. Silently does nothing if the client can't produce
+// one yet (e.g. a cupsonline client that hasn't started) -- formatStatus's
+// text already explains the client's state, so this would just be a second,
+// redundant error.
+func (b *Bot) sendClientQR(chatID int64, id string) {
+	status, ok := b.mgr.Get(id)
+	if !ok {
+		return
+	}
+	tun, err := clientqr.Build(status, b.panelPublicKey)
+	if err != nil {
+		return
+	}
+	png, err := clientqr.PNG(tun, 512)
+	if err != nil {
+		log.Printf("[TGBOT] qr for %s: %v", id, err)
+		return
+	}
+	if err := b.api.sendPhoto(chatID, "qr.png", png, "QR-код клиента "+tun.Name); err != nil {
+		log.Printf("[TGBOT] sendPhoto for %s: %v", id, err)
+	}
 }
 
 func transportLabel(t string) string {

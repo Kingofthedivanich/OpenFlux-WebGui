@@ -278,6 +278,7 @@ OpenFlux/
   exitmgr/                         # --role=exit-panel: multi-client registry (config, store, transport wiring)
   panel/                           # --role=exit-panel: web UI + HTTP API over exitmgr.Manager
   telegrambot/                     # --role=exit-panel: optional Telegram admin bot over exitmgr.Manager
+  clientqr/                        # Client -> Android Tunnel QR payload, shared by panel and telegrambot
   utils/                           # Logging
   ios-app/                         # SwiftUI iOS client (XcodeGen)
   build_ios.sh                     # Build iOS static library (liboflux.a)
@@ -372,7 +373,9 @@ url/token, the panel's public key, and its PSK if any) -- no manual copying.
 Runs a Telegram bot in the same process, wired directly to the same client
 manager as the web UI — full parity (`/list`, `/status <id>`, `/key`,
 `/add`, `/edit <id>`, `/remove <id>`), so the panel can be operated from a
-phone without an SSH tunnel. Only the whitelisted `--telegram-admin-ids`
+phone without an SSH tunnel. `/status <id>` also sends that client's QR
+code as a photo, same as the panel's QR button, for one-scan import into
+the Android app. Only the whitelisted `--telegram-admin-ids`
 get a response; everyone else is silently ignored. Get a token from
 [@BotFather](https://t.me/BotFather) and your user id from
 [@userinfobot](https://t.me/userinfobot).
