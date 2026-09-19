@@ -8,6 +8,12 @@ struct ContentView: View {
     @AppStorage("docURL") private var docURL: String = ""
     @AppStorage("maxToken") private var maxToken: String = ""
     @AppStorage("maxUid") private var maxUid: String = ""
+    // Both optional: an exit node with encryption on prints its public key
+    // (base64) at startup for --peer-key; --psk-file closes it to strangers.
+    // Empty peerKey means plaintext, matching every exit node that hasn't
+    // turned encryption on.
+    @AppStorage("peerKey") private var peerKey: String = ""
+    @AppStorage("pskSecret") private var pskSecret: String = ""
     // Uncommon default port to avoid clashing with other local proxies.
     @AppStorage("socksPort") private var socksPort: String = "10808"
     @AppStorage("debugLog") private var debugLog: Bool = false
@@ -40,6 +46,8 @@ struct ContentView: View {
                     .disabled(tunnel.running)
 
                     connectionFields
+
+                    encryptionFields
 
                     portField
 
@@ -79,6 +87,22 @@ struct ContentView: View {
         }
     }
 
+    private var encryptionFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Encryption (optional)").font(.caption).foregroundColor(.secondary)
+            field(title: "Exit node public key (--peer-key)",
+                  placeholder: "from the exit node's startup banner",
+                  text: $peerKey)
+            field(title: "Shared secret (PSK, optional)",
+                  placeholder: "only if the exit node requires one",
+                  text: $pskSecret)
+            if peerKey.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("Empty = plaintext, unencrypted tunnel.")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+        }
+    }
+
     private var portField: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Local SOCKS5 port").font(.caption).foregroundColor(.secondary)
@@ -103,6 +127,8 @@ struct ContentView: View {
                                      url: docURL,
                                      maxToken: maxToken,
                                      maxUid: maxUid,
+                                     peerKey: peerKey,
+                                     psk: pskSecret,
                                      port: Int(socksPort) ?? 10808)
                     } label: {
                         Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity)
@@ -139,7 +165,8 @@ struct ContentView: View {
             } else {
                 Button {
                     vpn.start(transport: transport.rawValue, url: docURL,
-                              maxToken: maxToken, maxUid: maxUid)
+                              maxToken: maxToken, maxUid: maxUid,
+                              peerKey: peerKey, psk: pskSecret)
                 } label: {
                     Label("Start VPN", systemImage: "bolt.fill").frame(maxWidth: .infinity)
                 }

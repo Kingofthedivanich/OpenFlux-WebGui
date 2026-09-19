@@ -12,16 +12,15 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
+	"openflux/internal/encryptionsetup"
 	"openflux/internal/socks5"
 	"openflux/internal/transport"
-	"openflux/internal/transport/oneme"
-	"openflux/internal/transport/yandex"
+	"openflux/internal/transportstack"
 	"openflux/internal/tunnel"
 	"openflux/internal/utils"
 )
@@ -138,38 +137,35 @@ const (
 	startBadEncryption  = 7 // peer key or PSK from OpenFluxSetPeerKey / OpenFluxSetPSK is unusable
 )
 
-// newBridgeDocStreams builds the iOS client transport for one or several
-// comma-separated documents: one legacy-codec stream per document, combined
-// into a MultiStreamTransport when there is more than one.
-func newBridgeDocStreams(transportType, docURL string, enc *encryptionSetup, config transport.TransportConfig) (transport.Transport, error) {
-	var firstErr error
-	t := newDocStreams(splitURLs(docURL), func(u string) transport.Transport {
-		var raw transport.Transport
-		if transportType == "vyandex" {
-			raw = yandex.NewYandexVolgaTransport(u, config)
-		} else {
-			raw = yandex.NewYandexDocsTransport(u, config)
-		}
-		s, err := newBridgeStream(raw, enc)
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
-		return s
-	})
-	return t, firstErr
-}
-
-// newBridgeStream stacks the optional encryption and the codec on a raw
-// transport, in the same order and with the same default codec as main.go,
-// so a phone talks to an exit node started with default flags.
-func newBridgeStream(raw transport.Transport, enc *encryptionSetup) (transport.Transport, error) {
-	if enc != nil {
-		var err error
-		if raw, err = enc.wrap(raw); err != nil {
-			return nil, err
-		}
+// buildBridgeTransport builds the client transport stack (backend, optional
+// encryption, codec, and multi-stream if docURL is a comma-separated list)
+// for one bridge start call. Delegates to transportstack.Build -- the same
+// wiring the CLI and the panel use -- instead of duplicating it, so the
+// bridges can't silently diverge from them the way this file's own
+// hand-rolled version once did.
+func buildBridgeTransport(tt, docURL, maxToken, maxUid string, enc *encryptionsetup.Setup, config transport.TransportConfig) (transport.Transport, error) {
+	transportType := tt
+	if transportType == "" {
+		transportType = "yandex"
 	}
-	return transport.NewBatchedTransport(raw), nil
+	switch transportType {
+	case "yandex", "vyandex", "oneme":
+	default:
+		return nil, fmt.Errorf("unknown transport type: %s", tt)
+	}
+
+	var encryptFn func(transport.Transport) (transport.Transport, error)
+	if enc != nil {
+		encryptFn = enc.Wrap
+	}
+	return transportstack.Build(transportstack.Params{
+		TransportType: transportType,
+		URL:           docURL,
+		IsExit:        false,
+		MaxToken:      maxToken,
+		MaxUid:        maxUid,
+		Encrypt:       encryptFn,
+	}, config)
 }
 
 // OpenFluxStartClient starts the SOCKS5 client tunnel.
@@ -215,31 +211,24 @@ func OpenFluxStartClient(transportType, url, socksAddr, maxToken, maxUid *C.char
 
 	// Optional encryption sits on the raw transport, under the codec, the
 	// same way main.go wires it.
-	enc, err := newEncryptionSetup(bridgeEncryptionOptions(), true)
+	enc, err := encryptionsetup.New(bridgeEncryptionOptions(), true)
 	if err != nil {
 		utils.Debugf("[BRIDGE] Encryption: %v", err)
 		return C.int(startBadEncryption)
 	}
 	if enc != nil {
-		utils.Debugf("[BRIDGE] Transport encryption: %s", enc.label)
+		utils.Debugf("[BRIDGE] Transport encryption: %s", enc.Label)
 	} else {
 		utils.Debugf("[BRIDGE] WARNING: plaintext tunnel (no peer key set)")
 	}
 
 	config := transport.DefaultConfig()
-	var t transport.Transport
-	switch tt {
-	case "yandex", "", "vyandex":
-		t, err = newBridgeDocStreams(tt, docURL, enc, config)
-	case "oneme":
-		uidint, _ := strconv.ParseInt(mUid, 10, 64)
-		t, err = newBridgeStream(oneme.NewOneMeTransport(false, mToken, uidint, config), enc)
-	default:
-		utils.Debugf("[BRIDGE] Unknown transport type: %s", tt)
-		return C.int(startBadTransport)
-	}
+	t, err := buildBridgeTransport(tt, docURL, mToken, mUid, enc, config)
 	if err != nil {
-		utils.Debugf("[BRIDGE] Configure encrypted transport: %v", err)
+		utils.Debugf("[BRIDGE] Configure transport: %v", err)
+		if tt != "" && tt != "yandex" && tt != "vyandex" && tt != "oneme" {
+			return C.int(startBadTransport)
+		}
 		return C.int(startBadEncryption)
 	}
 
@@ -408,8 +397,8 @@ func OpenFluxSetAllowPlaintext(on C.int) {
 }
 
 // bridgeEncryptionOptions snapshots the encryption settings for a start call.
-func bridgeEncryptionOptions() encryptionOptions {
+func bridgeEncryptionOptions() encryptionsetup.Options {
 	bridgeCfgMu.Lock()
 	defer bridgeCfgMu.Unlock()
-	return encryptionOptions{PeerKey: bridgePeerKey, PSK: bridgePSK, AllowPlaintext: bridgeAllowPlaintext}
+	return encryptionsetup.Options{PeerKey: bridgePeerKey, PSK: bridgePSK, AllowPlaintext: bridgeAllowPlaintext}
 }

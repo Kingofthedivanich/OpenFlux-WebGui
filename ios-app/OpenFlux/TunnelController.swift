@@ -27,11 +27,19 @@ final class TunnelController: ObservableObject {
     private(set) var socksAddr = ""
 
     /// Starts the client tunnel over the selected transport.
+    /// - peerKey: exit node's public key (base64), empty for plaintext.
+    /// - psk: optional shared secret; ignored when peerKey is empty.
     /// - port: local SOCKS5 port to listen on (127.0.0.1:port).
-    func start(transport: TransportKind, url: String, maxToken: String, maxUid: String, port: Int) {
+    func start(transport: TransportKind, url: String, maxToken: String, maxUid: String,
+               peerKey: String, psk: String, port: Int) {
         guard !running else { return }
         let addr = "127.0.0.1:\(port)"
         socksAddr = addr
+
+        let trimmedKey = peerKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        trimmedKey.withCString { k in OpenFluxSetPeerKey(UnsafeMutablePointer(mutating: k)) }
+        psk.withCString { s in OpenFluxSetPSK(UnsafeMutablePointer(mutating: s)) }
+        OpenFluxSetAllowPlaintext(trimmedKey.isEmpty ? 1 : 0)
 
         let rc = transport.rawValue.withCString { tt in
             url.withCString { u in
@@ -62,6 +70,8 @@ final class TunnelController: ObservableObject {
             appendLog("[app] transport failed to start")
         case 4:
             appendLog("[app] port \(port) is busy — pick another port")
+        case 7:
+            appendLog("[app] bad peer key / PSK — check the encryption fields")
         default:
             appendLog("[app] start failed (code \(rc))")
         }

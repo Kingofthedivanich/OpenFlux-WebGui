@@ -3,8 +3,10 @@ import NetworkExtension
 import Combine
 
 /// Installs and controls the system VPN profile backed by the packet-tunnel
-/// extension. The transport config (URL / MAX creds) is passed to the extension
-/// through the tunnel protocol's providerConfiguration.
+/// extension. The transport config (URL / MAX creds / peer key / PSK) is
+/// passed to the extension through the tunnel protocol's
+/// providerConfiguration -- the extension runs in its own process, so this
+/// is the only way it learns these values.
 @MainActor
 final class VPNController: ObservableObject {
     @Published var status: String = "Disconnected"
@@ -26,7 +28,8 @@ final class VPNController: ObservableObject {
         refreshStatus()
     }
 
-    func start(transport: String, url: String, maxToken: String, maxUid: String) {
+    func start(transport: String, url: String, maxToken: String, maxUid: String,
+               peerKey: String, psk: String) {
         Task {
             let m = manager ?? NETunnelProviderManager()
             let proto = NETunnelProviderProtocol()
@@ -35,6 +38,7 @@ final class VPNController: ObservableObject {
             proto.providerConfiguration = [
                 "transport": transport, "url": url,
                 "maxToken": maxToken, "maxUid": maxUid,
+                "peerKey": peerKey, "psk": psk,
             ]
             m.protocolConfiguration = proto
             m.localizedDescription = "OpenFlux"
