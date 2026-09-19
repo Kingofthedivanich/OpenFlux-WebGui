@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"openflux/exitmgr"
+	"openflux/netguard"
 	"openflux/panel"
 	"openflux/socks5"
 	"openflux/transport"
@@ -21,7 +22,6 @@ import (
 	"openflux/transport/mailru"
 	"openflux/transport/oneme"
 	"openflux/transport/yandex"
-	"openflux/netguard"
 	"openflux/tunnel"
 	"openflux/tunnel/l3"
 	"openflux/utils"
@@ -32,6 +32,7 @@ var (
 	maxToken     string
 	maxUid       string
 	localIP      string
+	trafficEvery time.Duration
 )
 
 // expandShortFlags rewrites single-letter flag aliases into their long
@@ -125,6 +126,8 @@ func main() {
 		"Document URL. A comma-separated list (yandex, vyandex) runs the tunnel over several documents at once")
 	statusEvery := flag.Duration("multistream-status", 0,
 		"With several --url documents: log per-document state on this interval (e.g. 10s)")
+	trafficInterval := flag.Duration("traffic-stats", 0,
+		"Emit machine-readable cumulative transport traffic on this interval (e.g. 1s)")
 	flag.StringVar(&maxToken, "maxToken", "", "MAX Web token. If u use MAX transport")
 	flag.StringVar(&maxUid, "maxUid", "", "MAX call user id. If u use MAX transport")
 	socksAddr := flag.String("socks5", "127.0.0.1:1080", "SOCKS5 listen address (loopback by default; no authentication, so avoid exposing it)")
@@ -236,6 +239,7 @@ DEPRECATED (removed in v2)
 
 	os.Args = expandShortFlags(os.Args)
 	flag.Parse()
+	trafficEvery = *trafficInterval
 
 	// Map deprecated flags to their new counterparts. New flags win over
 	// deprecated ones if both are supplied.
@@ -594,6 +598,16 @@ func runExitPanel(addr, user, pass, dataPath, keyFile string) {
 func startTransport(trans transport.Transport) {
 	if err := trans.Start(); err != nil {
 		log.Fatalf("Failed to start transport: %v", err)
+	}
+	if trafficEvery > 0 {
+		go func() {
+			ticker := time.NewTicker(trafficEvery)
+			defer ticker.Stop()
+			for range ticker.C {
+				s := trans.Stats()
+				log.Printf("[TRAFFIC] tx=%d rx=%d", s.BytesSent, s.BytesReceived)
+			}
+		}()
 	}
 }
 
