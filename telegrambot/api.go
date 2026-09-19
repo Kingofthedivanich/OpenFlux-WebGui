@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"time"
 )
@@ -139,6 +140,54 @@ func (a *api) sendMessage(chatID int64, text string, kb *inlineKeyboard) error {
 		params["reply_markup"] = kb
 	}
 	return a.call("sendMessage", params, nil)
+}
+
+// sendPhoto uploads photo (raw image bytes) to chatID, with an optional
+// caption. Unlike every other call here, Telegram requires this one as
+// multipart/form-data rather than JSON since it carries a file.
+func (a *api) sendPhoto(chatID int64, filename string, photo []byte, caption string) error {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	if err := w.WriteField("chat_id", fmt.Sprintf("%d", chatID)); err != nil {
+		return err
+	}
+	if caption != "" {
+		if err := w.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	fw, err := w.CreateFormFile("photo", filename)
+	if err != nil {
+		return err
+	}
+	if _, err := fw.Write(photo); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/bot%s/sendPhoto", a.base, a.token)
+	req, err := http.NewRequest(http.MethodPost, url, &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var r apiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	if !r.OK {
+		return fmt.Errorf("telegram: %s", r.Description)
+	}
+	return nil
 }
 
 // answerCallbackQuery acknowledges a button press so the client stops

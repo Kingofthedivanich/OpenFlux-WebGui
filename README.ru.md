@@ -290,6 +290,7 @@ OpenFlux/
   exitmgr/                         # --role=exit-panel: реестр мультиклиента (конфиг, стор, сборка транспорта)
   panel/                           # --role=exit-panel: веб-UI + HTTP API поверх exitmgr.Manager
   telegrambot/                     # --role=exit-panel: опциональный Telegram-бот поверх exitmgr.Manager
+  clientqr/                        # QR-конфиг клиента для Android, общий для panel и telegrambot
   utils/                           # Логирование
   ios-app/                         # iOS-клиент на SwiftUI (XcodeGen)
   build_ios.sh                     # Сборка статической библиотеки iOS (liboflux.a)
@@ -386,8 +387,11 @@ Linux без root). Медленнее `l3` (двойная терминация
 Запускает Telegram-бота в том же процессе, подключённого напрямую к тому же
 менеджеру клиентов, что и веб-панель — полный паритет (`/list`,
 `/status <id>`, `/key`, `/add`, `/edit <id>`, `/remove <id>`), так что
-панелью можно управлять с телефона без SSH-туннеля. Отвечает только тем, чей
-id есть в `--telegram-admin-ids`, остальным — молча игнорирует. Токен — у
+панелью можно управлять с телефона без SSH-туннеля. `/status <id>` также
+присылает QR-код этого клиента отдельным фото — так же, как кнопка QR в
+панели, для импорта в Android-приложение одним сканированием. Отвечает
+только тем, чей id есть в `--telegram-admin-ids`, остальным — молча
+игнорирует. Токен — у
 [@BotFather](https://t.me/BotFather), свой id — у
 [@userinfobot](https://t.me/userinfobot).
 
