@@ -317,6 +317,23 @@ user@host`), а не открывайте наружу напрямую. `l3` в
 добавлении клиента в веб-интерфейсе можно указать необязательный файл PSK,
 закрывающий именно этого клиента от посторонних.
 
+#### Telegram-бот администратора (опционально)
+
+```
+./openflux --role=exit-panel \
+    --panel-addr=127.0.0.1:8088 --panel-user=admin --panel-pass=CHANGE_ME \
+    --telegram-bot-token=<токен от @BotFather> \
+    --telegram-admin-ids=<твой telegram user id>[,<ещё id>]
+```
+
+Запускает Telegram-бота в том же процессе, подключённого напрямую к тому же
+менеджеру клиентов, что и веб-панель — полный паритет (`/list`,
+`/status <id>`, `/key`, `/add`, `/edit <id>`, `/remove <id>`), так что
+панелью можно управлять с телефона без SSH-туннеля. Отвечает только тем, чей
+id есть в `--telegram-admin-ids`, остальным — молча игнорирует. Токен — у
+[@BotFather](https://t.me/BotFather), свой id — у
+[@userinfobot](https://t.me/userinfobot).
+
 ### Обновление развёрнутой выходной ноды
 
 Каждый релизный тег публикует собранный `openflux-linux-amd64` (с зашитой
@@ -524,6 +541,8 @@ Start clients with --peer-key=<ключ в base64>
 | `--panel-user` / `--panel-pass` | | | Логин для панели (`--role=exit-panel`, обязателен) |
 | `--panel-data` | | `openflux-clients.json` | Файл сохранённых клиентов (`--role=exit-panel`) |
 | `--panel-key-file` | | `openflux-panel.key` | Noise-ключ панели, общий для всех клиентов (`--role=exit-panel`) |
+| `--telegram-bot-token` | | | Опционально: запустить Telegram-бота панели (токен от @BotFather) |
+| `--telegram-admin-ids` | | | Telegram user id через запятую, кому разрешён доступ к боту |
 | `--bench-bytes` | | `0` | Сколько MB залить (`--role=bench-send`) |
 | `--bench-compressible` | | `false` | Сжимаемый payload (bench) |
 
