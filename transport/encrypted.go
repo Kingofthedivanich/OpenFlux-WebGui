@@ -216,6 +216,21 @@ func (e *EncryptedTransport) Stop() error {
 	return e.Transport.Stop()
 }
 
+// Stats reports connected only when the carrier is up and Noise has a usable
+// sending session. Carrier-only connectivity is insufficient: starting a VPN
+// after a transient WebSocket connect but before the handshake completes
+// creates a blackhole while the UI incorrectly says it is running.
+func (e *EncryptedTransport) Stats() TransportStats {
+	stats := e.Transport.Stats()
+	e.mu.Lock()
+	hasSession := e.current != nil
+	e.mu.Unlock()
+	stats.Connected = stats.Connected && hasSession
+	return stats
+}
+
+func (e *EncryptedTransport) IsConnected() bool { return e.Stats().Connected }
+
 func (e *EncryptedTransport) run() {
 	defer e.wg.Done()
 	ticker := time.NewTicker(time.Second)
