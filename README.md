@@ -57,6 +57,10 @@ that tracks this repo's encryption changes.
 - **Telegram admin bot** (optional, same role) — full parity with the web
   panel's client management, operable from a phone with no SSH tunnel. See
   [Telegram admin bot](#telegram-admin-bot-optional).
+- **`deploy/menu.sh`** — a 3x-ui-style interactive console on the VPS
+  itself: update, manage clients, and enable/configure/disable the
+  Telegram bot without hand-editing the systemd unit. See
+  [Management console](#management-console-like-3x-uis-menu).
 
 **Transport**
 - **Multi-stream** — `--url` takes a comma-separated document list
@@ -385,6 +389,31 @@ cd /root/OpenFlux && ./deploy/update.sh
 
 Run it manually whenever you want to update — nothing on the box checks
 for updates on its own.
+
+### Management console (like 3x-ui's menu)
+
+[`deploy/menu.sh`](deploy/menu.sh) is an interactive, root-only console for
+a `--role=exit-panel` box — update, list/add/remove clients, and
+enable/reconfigure/disable the Telegram bot, all from one command instead
+of curl+jq against the panel API or hand-editing the systemd unit:
+
+```
+cd /root/OpenFlux && sudo ./deploy/menu.sh
+
+# or, symlinked once for a short command from anywhere:
+sudo ln -sf "$(pwd)/deploy/menu.sh" /usr/local/bin/openflux-ctl
+sudo openflux-ctl
+```
+
+First run walks through setup (panel address/user/pass, key/data paths),
+auto-detecting them from an existing systemd override if there is one.
+State lives in `/root/.openflux-ctl.env` (root-only, `0600`) — same trust
+level as the systemd unit, which already carries the panel password in
+plaintext. Every change to the Telegram bot's settings (or anything else
+in the menu that touches the unit) regenerates the *entire* `ExecStart`
+from that state and restarts the service, so there's never a half-applied
+hand-edit to get wrong — the exact mistake that's easy to make editing the
+override in `nano` by hand.
 
 ### Client - macOS utun (default on macOS)
 
