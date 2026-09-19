@@ -605,7 +605,7 @@ func startTransport(trans transport.Transport) {
 			defer ticker.Stop()
 			for range ticker.C {
 				s := trans.Stats()
-				log.Printf("[TRAFFIC] tx=%d rx=%d", s.BytesSent, s.BytesReceived)
+				log.Printf("[TRAFFIC] connected=%t tx=%d rx=%d", s.Connected, s.BytesSent, s.BytesReceived)
 			}
 		}()
 	}
