@@ -100,6 +100,9 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader) 
 		return nil, err
 	}
 	req.Header.Set("Authorization", "OAuth "+c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -107,11 +110,25 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader) 
 	return resp, nil
 }
 
-// call does a JSON API request and decodes a JSON response into out (if
-// non-nil). Any status outside 2xx (except the ones each caller special-cases)
-// is turned into a readable error from the response body.
+// call does a JSON API request with no request body and decodes a JSON
+// response into out (if non-nil). Any status outside 2xx (except the ones
+// each caller special-cases) is turned into a readable error from the
+// response body.
 func (c *Client) call(ctx context.Context, method, rawURL string, out any) error {
-	resp, err := c.do(ctx, method, rawURL, nil)
+	return c.callWithBody(ctx, method, rawURL, nil, out)
+}
+
+// callWithBody is call, but marshals body as the JSON request body.
+func (c *Client) callWithBody(ctx context.Context, method, rawURL string, body, out any) error {
+	var reqBody io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("encode request body: %w", err)
+		}
+		reqBody = bytes.NewReader(data)
+	}
+	resp, err := c.do(ctx, method, rawURL, reqBody)
 	if err != nil {
 		return err
 	}
@@ -171,9 +188,27 @@ func (c *Client) putFile(ctx context.Context, href string, data []byte) error {
 	return decode(resp, nil)
 }
 
+// publicSettingsRequest asks Yandex Disk to publish a resource with the
+// public link open to editing, not just viewing (the default). Without
+// this, transport/yandex's collaborative-editing scrape never gets a
+// token/document.key -- the anonymous visitor only has read access, so
+// there's no write session to hand out.
+type publicSettingsRequest struct {
+	PublicSettings struct {
+		Accesses []publicAccess `json:"accesses"`
+	} `json:"public_settings"`
+}
+
+type publicAccess struct {
+	Macros []string `json:"macros"`
+	Rights []string `json:"rights"`
+}
+
 func (c *Client) publish(ctx context.Context, path string) error {
-	u := fmt.Sprintf("%s/resources/publish?path=%s", c.base, url.QueryEscape(path))
-	return c.call(ctx, http.MethodPut, u, nil)
+	u := fmt.Sprintf("%s/resources/publish?path=%s&allow_address_access=true", c.base, url.QueryEscape(path))
+	var body publicSettingsRequest
+	body.PublicSettings.Accesses = []publicAccess{{Macros: []string{"all"}, Rights: []string{"write"}}}
+	return c.callWithBody(ctx, http.MethodPut, u, body, nil)
 }
 
 func (c *Client) publicURL(ctx context.Context, path string) (string, error) {

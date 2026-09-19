@@ -14,12 +14,14 @@ import (
 )
 
 type fakeDisk struct {
-	mu          sync.Mutex
-	srv         *httptest.Server
-	uploaded    []byte
-	published   []string
-	folderPUTs  int
-	failPublish bool
+	mu             sync.Mutex
+	srv            *httptest.Server
+	uploaded       []byte
+	published      []string
+	publishQueries []string
+	publishBodies  [][]byte
+	folderPUTs     int
+	failPublish    bool
 }
 
 func newFakeDisk(t *testing.T) *fakeDisk {
@@ -62,8 +64,11 @@ func newFakeDisk(t *testing.T) *fakeDisk {
 			http.Error(w, `{"message":"disk quota exceeded","error":"DiskResourceDoesNotExistError"}`, http.StatusPreconditionFailed)
 			return
 		}
+		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.published = append(f.published, r.URL.Query().Get("path"))
+		f.publishQueries = append(f.publishQueries, r.URL.RawQuery)
+		f.publishBodies = append(f.publishBodies, body)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})
@@ -95,6 +100,43 @@ func TestCreateDocHappyPath(t *testing.T) {
 	}
 	if len(f.published) != 1 || !strings.Contains(f.published[0], "openflux/Alices-phone-") {
 		t.Fatalf("published = %v, want one path under /openflux with a sanitized name", f.published)
+	}
+}
+
+// TestCreateDocPublishesWithWriteAccessForEveryone locks in the fix for a
+// real production bug: publishing a document with Yandex Disk's own
+// defaults grants the public link view-only access, which transport/yandex
+// can't use (no editor_config.token/document.key -- no collaborative
+// session to open). Without allow_address_access=true and an explicit
+// accesses:[{macros:["all"], rights:["write"]}], a generated document
+// connects to nothing.
+func TestCreateDocPublishesWithWriteAccessForEveryone(t *testing.T) {
+	f := newFakeDisk(t)
+	c := newTestClient(f)
+
+	if _, err := c.CreateDoc(context.Background(), "x"); err != nil {
+		t.Fatalf("CreateDoc: %v", err)
+	}
+	if len(f.publishQueries) != 1 {
+		t.Fatalf("publish calls = %d, want 1", len(f.publishQueries))
+	}
+	if !strings.Contains(f.publishQueries[0], "allow_address_access=true") {
+		t.Fatalf("publish query = %q, want allow_address_access=true", f.publishQueries[0])
+	}
+
+	var body publicSettingsRequest
+	if err := json.Unmarshal(f.publishBodies[0], &body); err != nil {
+		t.Fatalf("publish body is not valid JSON: %v (%s)", err, f.publishBodies[0])
+	}
+	accesses := body.PublicSettings.Accesses
+	if len(accesses) != 1 {
+		t.Fatalf("accesses = %+v, want exactly one entry", accesses)
+	}
+	if len(accesses[0].Macros) != 1 || accesses[0].Macros[0] != "all" {
+		t.Fatalf("macros = %v, want [\"all\"]", accesses[0].Macros)
+	}
+	if len(accesses[0].Rights) != 1 || accesses[0].Rights[0] != "write" {
+		t.Fatalf("rights = %v, want [\"write\"] (view-only can't produce a collaborative session)", accesses[0].Rights)
 	}
 }
 
