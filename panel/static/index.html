@@ -41,6 +41,17 @@
       </div>
     </div>
 
+    <div id="yandex-token-card" class="panel-key-card" style="display:none">
+      <div class="panel-key-label">Yandex OAuth токен (для автосоздания документов --url)</div>
+      <div id="yandex-token-status" class="hint-text"></div>
+      <div class="panel-key-row">
+        <input type="password" id="yandex-token-input" placeholder="Вставь токен, чтобы задать или заменить" autocomplete="off" />
+        <button type="button" id="yandex-token-save" class="ghost small">Сохранить</button>
+        <button type="button" id="yandex-token-clear" class="ghost small">Отключить</button>
+      </div>
+      <div id="yandex-token-error" class="error-text"></div>
+    </div>
+
     <div id="clients-empty" class="empty-state" style="display:none">
       Нет ни одного клиента. Добавь первого.
     </div>
