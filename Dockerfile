@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/openflux .
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/openflux ./cmd/openflux
 
 FROM alpine:3.22
 # ca-certificates: all transports are TLS (wss/https) to Yandex/MAX endpoints.

@@ -6,10 +6,10 @@
 ## Что сделано
 
 1. **Go-ядро → статическая библиотека.** Добавлен cgo-слой экспортов
-   (`../export_ios.go`, сборка по тегу `ios`): `OpenFluxStartClient`,
+   (`../cmd/openflux/export_ios.go`, сборка по тегу `ios`): `OpenFluxStartClient`,
    `OpenFluxStop`, `OpenFluxIsRunning`, `OpenFluxIsConnected`,
    `OpenFluxStatsJSON`, `OpenFluxReadLog`, `OpenFluxFreeString`.
-   Сборка: `../build_ios.sh` → `../output/ios/liboflux.a` (+ авто-заголовок `liboflux.h`).
+   Сборка: `../scripts/build_ios.sh` → `../output/ios/liboflux.a` (+ авто-заголовок `liboflux.h`).
 2. **iOS-приложение (SwiftUI, XcodeGen).** Экран с полем Yandex.Docs URL,
    Start/Stop, индикатор состояния, живой лог и кнопка Test (проверяет тоннель
    запросом через локальный SOCKS5 `127.0.0.1:1080`). Линкует `liboflux.a`.
@@ -37,7 +37,7 @@
 
 Из корня репозитория:
 ```bash
-./build_ios_app.sh
+./scripts/build_ios_app.sh
 ```
 Результат: `ios-app/build/export/OpenFlux.ipa` (подписан для App Store).
 
