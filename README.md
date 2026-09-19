@@ -237,6 +237,10 @@ OpenFlux/
     windivert/                     # WinDivert backend (present, not wired to L3 yet)
   socks5/                          # SOCKS5 server (client fallback)
   network/                         # Checksums, packet parsing
+  netguard/                        # SSRF denylist for the exit node
+  exitmgr/                         # --role=exit-panel: multi-client registry (config, store, transport wiring)
+  panel/                           # --role=exit-panel: web UI + HTTP API over exitmgr.Manager
+  telegrambot/                     # --role=exit-panel: optional Telegram admin bot over exitmgr.Manager
   utils/                           # Logging
   ios-app/                         # SwiftUI iOS client (XcodeGen)
   build_ios.sh                     # Build iOS static library (liboflux.a)
@@ -308,6 +312,23 @@ above if you need raw SNAT/DNAT.
 and printed at startup; every client shares this same identity and connects
 with `--peer-key=<that public key>`. Adding a client in the UI accepts an
 optional PSK file to close just that one client to anyone without the secret.
+
+#### Telegram admin bot (optional)
+
+```
+./openflux --role=exit-panel \
+    --panel-addr=127.0.0.1:8088 --panel-user=admin --panel-pass=CHANGE_ME \
+    --telegram-bot-token=<token from @BotFather> \
+    --telegram-admin-ids=<your Telegram user id>[,<more ids>]
+```
+
+Runs a Telegram bot in the same process, wired directly to the same client
+manager as the web UI — full parity (`/list`, `/status <id>`, `/key`,
+`/add`, `/edit <id>`, `/remove <id>`), so the panel can be operated from a
+phone without an SSH tunnel. Only the whitelisted `--telegram-admin-ids`
+get a response; everyone else is silently ignored. Get a token from
+[@BotFather](https://t.me/BotFather) and your user id from
+[@userinfobot](https://t.me/userinfobot).
 
 ### Updating a deployed exit node
 
@@ -516,6 +537,8 @@ Measure raw goodput through the transport, without touching the host network:
 | `--panel-user` / `--panel-pass` | | | `--role=exit-panel` admin login (required) |
 | `--panel-data` | | `openflux-clients.json` | `--role=exit-panel` persisted client registry |
 | `--panel-key-file` | | `openflux-panel.key` | `--role=exit-panel` Noise static key, shared by every client |
+| `--telegram-bot-token` | | | `--role=exit-panel` optional: run a Telegram admin bot (token from @BotFather) |
+| `--telegram-admin-ids` | | | `--role=exit-panel` comma-separated Telegram user ids allowed to use the bot |
 | `--bench-bytes` | | `0` | MB to push (`--role=bench-send`) |
 | `--bench-compressible` | | `false` | Use compressible payload (bench) |
 

@@ -17,6 +17,7 @@ import (
 	"openflux/netguard"
 	"openflux/panel"
 	"openflux/socks5"
+	"openflux/telegrambot"
 	"openflux/transport"
 	"openflux/transport/cupsonline"
 	"openflux/transport/mailru"
@@ -139,6 +140,8 @@ func main() {
 	panelPass := flag.String("panel-pass", "", "--role=exit-panel: admin panel login password (required)")
 	panelData := flag.String("panel-data", "openflux-clients.json", "--role=exit-panel: where registered clients are persisted")
 	panelKeyFile := flag.String("panel-key-file", "openflux-panel.key", "--role=exit-panel: Noise static key file, created on first run. The public key is printed at startup; every client shares it")
+	telegramBotToken := flag.String("telegram-bot-token", "", "--role=exit-panel: Telegram bot token for the admin bot (optional; from @BotFather)")
+	telegramAdminIDs := flag.String("telegram-admin-ids", "", "--role=exit-panel: comma-separated Telegram user ids allowed to use the bot (required if --telegram-bot-token is set)")
 
 	benchBytes := flag.Int("bench-bytes", 0, "Benchmark: push this many MB through the transport, then report and exit")
 	benchCompressible := flag.Bool("bench-compressible", false, "Benchmark: use compressible payload instead of random")
@@ -205,6 +208,11 @@ ADMIN PANEL  (only with --role=exit-panel; always l4, one tunnel per client)
       --panel-data=<path>      Where registered clients are persisted (JSON).
       --panel-key-file=<path>  Noise static key file, created on first run. The
                                public key is printed at startup; give it to clients.
+      --telegram-bot-token=<t> Optional: run a Telegram admin bot alongside the
+                               panel (list/add/edit/remove/status/key from a phone,
+                               no SSH tunnel needed). Token from @BotFather.
+      --telegram-admin-ids=<ids> Comma-separated Telegram user ids allowed to use
+                               the bot. Required together with --telegram-bot-token.
 
 TRANSPORT MODIFIERS
   -c, --codec=batched          zstd + coalescing. Default.
@@ -337,6 +345,11 @@ DEPRECATED (removed in v2)
 		if *panelUser == "" || *panelPass == "" {
 			log.Fatalf("--role=exit-panel requires --panel-user and --panel-pass")
 		}
+		if *telegramBotToken != "" {
+			if _, err := parseTelegramAdminIDs(*telegramAdminIDs); err != nil {
+				log.Fatalf("--telegram-admin-ids: %v", err)
+			}
+		}
 	case roleBenchSend, roleBenchSink:
 		// No ingress or exit mode.
 	default:
@@ -373,7 +386,7 @@ DEPRECATED (removed in v2)
 	}
 
 	if *role == roleExitPanel {
-		runExitPanel(*panelAddr, *panelUser, *panelPass, *panelData, *panelKeyFile)
+		runExitPanel(*panelAddr, *panelUser, *panelPass, *panelData, *panelKeyFile, *telegramBotToken, *telegramAdminIDs)
 		return
 	}
 
@@ -549,7 +562,29 @@ func runExit(trans transport.Transport, exitMode tunnel.ExitMode, upstreamProxy 
 // gets its own transport and its own independent L4 tunnel (see
 // exitmgr.Manager), managed live through a local, login-gated web panel
 // instead of one client per CLI invocation.
-func runExitPanel(addr, user, pass, dataPath, keyFile string) {
+// parseTelegramAdminIDs parses a comma-separated --telegram-admin-ids value.
+// At least one id is required: an empty whitelist would make isAdmin reject
+// everyone, which is indistinguishable from a silently broken bot.
+func parseTelegramAdminIDs(raw string) ([]int64, error) {
+	var ids []int64
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid id %q: %w", p, err)
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("at least one id is required (comma-separated Telegram user ids)")
+	}
+	return ids, nil
+}
+
+func runExitPanel(addr, user, pass, dataPath, keyFile, telegramBotToken, telegramAdminIDs string) {
 	key, created, err := transport.LoadOrCreateStaticKey(keyFile)
 	if err != nil {
 		log.Fatalf("panel: static key: %v", err)
@@ -573,6 +608,18 @@ func runExitPanel(addr, user, pass, dataPath, keyFile string) {
 	log.Printf("Running as EXIT NODE PANEL (l4, multi-client)")
 	log.Printf("Admin panel: http://%s (login required)", addr)
 
+	var botCancel context.CancelFunc
+	if telegramBotToken != "" {
+		adminIDs, err := parseTelegramAdminIDs(telegramAdminIDs)
+		if err != nil {
+			log.Fatalf("--telegram-admin-ids: %v", err)
+		}
+		bot := telegrambot.New(telegramBotToken, adminIDs, mgr, pub)
+		var botCtx context.Context
+		botCtx, botCancel = context.WithCancel(context.Background())
+		go bot.Run(botCtx)
+	}
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.ListenAndServe() }()
 
@@ -586,6 +633,9 @@ func runExitPanel(addr, user, pass, dataPath, keyFile string) {
 	}
 
 	log.Printf("Shutting down panel...")
+	if botCancel != nil {
+		botCancel()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {
