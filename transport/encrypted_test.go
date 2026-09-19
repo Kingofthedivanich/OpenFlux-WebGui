@@ -324,6 +324,17 @@ func (p *pair) establish() {
 	p.mu.Unlock()
 }
 
+func TestEncryptedConnectedRequiresNoiseSession(t *testing.T) {
+	p := newPair(t, pairOptions{})
+	if p.client.IsConnected() || p.client.Stats().Connected {
+		t.Fatal("raw carrier without a Noise session must not report connected")
+	}
+	p.establish()
+	if !p.client.IsConnected() || !p.client.Stats().Connected {
+		t.Fatal("confirmed Noise session should report connected")
+	}
+}
+
 // clientFrames sends the packets from the client and returns one captured
 // frame per packet, undelivered.
 func (p *pair) clientFrames(packets ...string) [][]byte {
