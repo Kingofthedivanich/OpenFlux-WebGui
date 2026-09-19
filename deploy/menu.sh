@@ -21,7 +21,11 @@
 # stop the rest of their own work use explicit `|| return 1`.
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# readlink -f resolves the full symlink chain: BASH_SOURCE[0] alone would
+# still be the symlink path (e.g. /usr/local/bin/openflux-ctl) when run via
+# the symlink this script's own header suggests creating, pointing
+# SCRIPT_DIR at /usr instead of the actual repo checkout.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 CONFIG_FILE="${OPENFLUX_CTL_CONFIG:-/root/.openflux-ctl.env}"
 COOKIE_JAR="$(mktemp)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
