@@ -217,6 +217,10 @@ main { padding: 24px 28px; max-width: 900px; margin: 0 auto; }
 
 .field-group { display: flex; flex-direction: column; gap: 12px; }
 
+.input-with-button { display: flex; gap: 8px; align-items: center; }
+.input-with-button input { flex: 1; min-width: 0; }
+.input-with-button button { white-space: nowrap; }
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
