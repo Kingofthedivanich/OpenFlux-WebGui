@@ -18,7 +18,7 @@ SOCKS5 tunnel over the Yandex.Docs transport on `127.0.0.1:1080`.
 ## Build + archive + export (one command)
 From the repo root:
 ```bash
-./build_ios_app.sh
+./scripts/build_ios_app.sh
 ```
 Produces `ios-app/build/export/OpenFlux.ipa`, distribution-signed for the App Store.
 

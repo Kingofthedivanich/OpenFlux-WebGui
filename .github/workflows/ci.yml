@@ -42,7 +42,7 @@ jobs:
           go-version-file: go.mod
 
       # CGO_ENABLED=0: the exit-node/client binary only needs cgo for the
-      # Android cross-build (via build_android.sh + the NDK toolchain), not
+      # Android cross-build (via scripts/build_android.sh + the NDK toolchain), not
       # for these desktop/server targets.
       - env:
           GOOS: ${{ matrix.goos }}

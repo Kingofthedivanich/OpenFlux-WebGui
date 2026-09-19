@@ -95,7 +95,7 @@ transports.
 - **iOS bridge** — `export_ios.go` builds under `//go:build ios` (inherited
   from upstream/the community fork) but this fork ships no iOS app or CI
   job for it.
-- `build_android.sh` is host-OS aware (macOS/Linux/Windows) and builds
+- `scripts/build_android.sh` is host-OS aware (macOS/Linux/Windows) and builds
   all three ABIs the [Android app fork](https://github.com/Kingofthedivanich/OpenFluxAndroid)
   ships, instead of just `arm64-v8a` from a macOS host — but the Android app
   itself lives in that separate repo.
@@ -235,76 +235,90 @@ yourself.
 
 ## Structure
 
+Everything under `internal/` is private to this module by Go's own
+compiler-enforced rule (nothing outside `openflux/...` can import it) --
+appropriate here since this is an application, not a library. `cmd/openflux`
+is the only buildable entry point.
+
 ```
 OpenFlux/
-  main.go                          # CLI entry (client / exit / benches)
-  multistream.go                   # Multi-stream status log
-  transportstack/                  # Backend+encryption+codec+multi-stream wiring, shared by main.go and exitmgr
-  bench.go                         # Benchmark helpers
-  tun_darwin.go                    # macOS utun L3 client
-  tun_watch.go                     # Socket watcher for bypass routes
-  tun_other.go                     # Stubs for non-darwin platforms
-  export_ios.go                    # cgo bridge for the iOS static library
-  transport/
-    transport.go                   # Transport interface
-    batched.go                     # BatchedTransport (coalescing + zstd)
-    framing.go                     # Wire framing for batched frames
-    compressor.go                  # Legacy per-packet LZ4 codec
-    encrypted.go                   # Optional encrypted session layer (Noise NKpsk0)
-    noise_keys.go                  # Exit static key file, peer key parsing, PSK derivation
-    replay.go                      # Anti-replay window for the encrypted layer
-    multistream.go                 # One tunnel over several documents
-    flowhash.go                    # Per-connection hash for multi-stream
-    yandex/                        # Yandex.Docs + Volga backends
-    oneme/                         # MAX Messenger backend
-    cupsonline/                    # Cups.online backend
-    mailru/                        # Mail.ru Docs backend
-  tunnel/
-    tunnel.go                      # Client tunnel (gVisor + TunnelLinkEndpoint)
-    endpoint.go                    # Virtual NIC (client)
-    exit.go                        # NewExitNode dispatcher (l3 / l4)
-    proxy_exit.go                  # L4 exit (gVisor + net.Dial)
-    l3/
-      l3.go                        # L3Exit: SNAT/DNAT, conntrack, egress filter
-      backend.go                   # L3Backend interface
-      backend_linux.go             # SOCK_RAW backend (Linux)
-      backend_windows.go           # Stub (WinDivert not wired yet)
-      backend_other.go             # Unsupported-platform stub
-      conntrack.go                 # Conntrack table
-      flow.go                      # Flow keys, SNAT/DNAT, checksums
-    rawsocket_linux.go             # Legacy raw exit (kept for reference)
-    rawsocket_{darwin,windows}.go  # Stubs
-    windivert/                     # WinDivert backend (present, not wired to L3 yet)
-  socks5/                          # SOCKS5 server (client fallback)
-  network/                         # Checksums, packet parsing
-  netguard/                        # SSRF denylist for the exit node
-  exitmgr/                         # --role=exit-panel: multi-client registry (config, store, transport wiring)
-  panel/                           # --role=exit-panel: web UI + HTTP API over exitmgr.Manager
-  telegrambot/                     # --role=exit-panel: optional Telegram admin bot over exitmgr.Manager
-  clientqr/                        # Client -> Android Tunnel QR payload, shared by panel and telegrambot
-  yandexdisk/                      # Official Yandex Disk REST API client: creates+publishes --url documents
-  utils/                           # Logging
+  cmd/openflux/
+    main.go                        # CLI entry (client / exit / benches)
+    export_ios.go, export_ios_packet.go  # cgo bridge for the iOS static
+                                    # library -- must stay next to main.go:
+                                    # -buildmode=c-archive builds one dir
+  internal/
+    bench/                         # --role=bench-send/bench-sink helpers
+    encryptionsetup/                # CLI flags -> Noise encryption config
+    multistream/                   # Multi-stream status log
+    signals/                       # OS signal handling (unix/windows)
+    tun/                           # macOS utun L3 client, socket watcher, host learner
+    transportstack/                # Backend+encryption+codec+multi-stream wiring, shared by main.go and exitmgr
+    transport/
+      transport.go                 # Transport interface
+      batched.go                   # BatchedTransport (coalescing + zstd)
+      framing.go                   # Wire framing for batched frames
+      compressor.go                # Legacy per-packet LZ4 codec
+      encrypted.go                 # Optional encrypted session layer (Noise NKpsk0)
+      noise_keys.go                # Exit static key file, peer key parsing, PSK derivation
+      replay.go                    # Anti-replay window for the encrypted layer
+      multistream.go               # One tunnel over several documents
+      flowhash.go                  # Per-connection hash for multi-stream
+      yandex/                      # Yandex.Docs + Volga backends
+      oneme/                       # MAX Messenger backend
+      cupsonline/                  # Cups.online backend
+      mailru/                      # Mail.ru Docs backend
+    tunnel/
+      tunnel.go                    # Client tunnel (gVisor + TunnelLinkEndpoint)
+      endpoint.go                  # Virtual NIC (client)
+      exit.go                      # NewExitNode dispatcher (l3 / l4)
+      proxy_exit.go                # L4 exit (gVisor + net.Dial)
+      l3/
+        l3.go                      # L3Exit: SNAT/DNAT, conntrack, egress filter
+        backend.go                 # L3Backend interface
+        backend_linux.go           # SOCK_RAW backend (Linux)
+        backend_windows.go         # Stub (WinDivert not wired yet)
+        backend_other.go           # Unsupported-platform stub
+        conntrack.go               # Conntrack table
+        flow.go                    # Flow keys, SNAT/DNAT, checksums
+      rawsocket_linux.go           # Legacy raw exit (kept for reference)
+      rawsocket_{darwin,windows}.go  # Stubs
+      windivert/                   # WinDivert backend (present, not wired to L3 yet)
+    socks5/                        # SOCKS5 server (client fallback)
+    network/                       # Checksums, packet parsing
+    netguard/                      # SSRF denylist for the exit node
+    exitmgr/                       # --role=exit-panel: multi-client registry (config, store, transport wiring)
+    panel/                         # --role=exit-panel: web UI + HTTP API over exitmgr.Manager
+    telegrambot/                   # --role=exit-panel: optional Telegram admin bot over exitmgr.Manager
+    clientqr/                      # Client -> Android Tunnel QR payload, shared by panel and telegrambot
+    yandexdisk/                    # Official Yandex Disk REST API client: creates+publishes --url documents
+    utils/                         # Logging
   ios-app/                         # SwiftUI iOS client (XcodeGen)
-  build_ios.sh                     # Build iOS static library (liboflux.a)
-  build_ios_app.sh                 # Build + archive + export iOS app IPA
-  build_android.sh                 # Build Android client binary
   scripts/
+    build_ios.sh                   # Build iOS static library (liboflux.a)
+    build_ios_app.sh               # Build + archive + export iOS app IPA
+    build_android.sh               # Build Android client binary
     cleanup-utun.sh                # Remove leftover utun routes (macOS)
-    build-flx-linux-img.sh         # Build minimal Alpine rootfs for QEMU
+  deploy/
+    update.sh                      # Self-service VPS updater, automatic rollback
+    menu.sh                        # Interactive ops console (openflux-ctl)
+  docker/
+    entrypoint.sh
+  docs/                            # Design notes, review write-ups
 ```
 
 ## Build
 
 ```
 go mod tidy
-go build -o openflux .
+go build -o openflux ./cmd/openflux
 ```
 
 Cross-build for the exit node (Linux amd64), stripped:
 
 ```
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w" -trimpath -o openflux-linux .
+    go build -ldflags="-s -w" -trimpath -o openflux-linux ./cmd/openflux
 ```
 
 ## Usage

@@ -102,7 +102,7 @@ Yandex/Volga/MAX/Mail.ru.
 - **iOS-мост** — `export_ios.go` собирается под `//go:build ios` (унаследован
   от апстрима/форка сообщества), но iOS-приложение и CI для него здесь не
   публикуются.
-- `build_android.sh` учитывает ОС хоста (macOS/Linux/Windows) и собирает все
+- `scripts/build_android.sh` учитывает ОС хоста (macOS/Linux/Windows) и собирает все
   три ABI, под которые
   [форк Android-приложения](https://github.com/Kingofthedivanich/OpenFluxAndroid)
   реально поставляет `jniLibs` — но само Android-приложение живёт в том
@@ -247,76 +247,90 @@ Xcode нужен только для цели `export_ios.go` под `//go:build
 
 ## Структура
 
+Всё под `internal/` приватно для этого модуля по правилу самого компилятора
+Go (ничего снаружи `openflux/...` не может это импортировать) — уместно
+здесь, поскольку это приложение, а не библиотека. `cmd/openflux` — точка
+сборки.
+
 ```
 OpenFlux/
-  main.go                          # Точка входа CLI (клиент / exit / бенчи)
-  multistream.go                   # Статус-лог мульти-стрима
-  transportstack/                  # Сборка backend+шифрование+кодек+multi-stream, общая для main.go и exitmgr
-  bench.go                         # Хелперы бенчмарка
-  tun_darwin.go                    # macOS utun L3-клиент
-  tun_watch.go                     # Watcher сокетов для bypass-маршрутов
-  tun_other.go                     # Заглушки для не-darwin платформ
-  export_ios.go                    # cgo-мост для iOS-статической библиотеки
-  transport/
-    transport.go                   # Интерфейс Transport
-    batched.go                     # BatchedTransport (склейка + zstd)
-    framing.go                     # Wire-формат батчированных кадров
-    compressor.go                  # Legacy per-packet LZ4-кодек
-    encrypted.go                   # Опциональный шифрованный сессионный слой (Noise NKpsk0)
-    noise_keys.go                  # Файл статического ключа ноды, разбор peer-key, вывод PSK
-    replay.go                      # Окно anti-replay для шифрованного слоя
-    multistream.go                 # Один туннель через несколько документов
-    flowhash.go                    # Хеш соединения для мульти-стрима
-    yandex/                        # Бэкенды Yandex.Docs + Volga
-    oneme/                         # Бэкенд MAX Messenger
-    cupsonline/                    # Бэкенд Cups.online
-    mailru/                        # Бэкенд Mail.ru Docs
-  tunnel/
-    tunnel.go                      # Клиентский туннель (gVisor + TunnelLinkEndpoint)
-    endpoint.go                    # Виртуальный NIC (клиент)
-    exit.go                        # Диспетчер NewExitNode (l3 / l4)
-    proxy_exit.go                  # L4 exit (gVisor + net.Dial)
-    l3/
-      l3.go                        # L3Exit: SNAT/DNAT, conntrack, фильтр egress
-      backend.go                   # Интерфейс L3Backend
-      backend_linux.go             # SOCK_RAW (Linux)
-      backend_windows.go           # Заглушка (WinDivert не подключён)
-      backend_other.go             # Заглушка для неподдерживаемых платформ
-      conntrack.go                 # Таблица conntrack
-      flow.go                      # Flow-ключи, SNAT/DNAT, checksums
-    rawsocket_linux.go             # Legacy raw exit (оставлен для референса)
-    rawsocket_{darwin,windows}.go  # Заглушки
-    windivert/                     # WinDivert-бэкенд (есть, но к L3 не подключён)
-  socks5/                          # SOCKS5-сервер (fallback на клиенте)
-  network/                         # Контрольные суммы, разбор пакетов
-  netguard/                        # SSRF-деннилист для выходной ноды
-  exitmgr/                         # --role=exit-panel: реестр мультиклиента (конфиг, стор, сборка транспорта)
-  panel/                           # --role=exit-panel: веб-UI + HTTP API поверх exitmgr.Manager
-  telegrambot/                     # --role=exit-panel: опциональный Telegram-бот поверх exitmgr.Manager
-  clientqr/                        # QR-конфиг клиента для Android, общий для panel и telegrambot
-  yandexdisk/                      # Официальный Yandex Disk REST API: создание+публикация документов для --url
-  utils/                           # Логирование
+  cmd/openflux/
+    main.go                        # Точка входа CLI (клиент / exit / бенчи)
+    export_ios.go, export_ios_packet.go  # cgo-мост для iOS-библиотеки —
+                                    # обязаны лежать рядом с main.go:
+                                    # -buildmode=c-archive собирает одну папку
+  internal/
+    bench/                         # Хелперы --role=bench-send/bench-sink
+    encryptionsetup/                # Флаги CLI -> конфиг шифрования Noise
+    multistream/                   # Статус-лог мульти-стрима
+    signals/                       # Обработка сигналов ОС (unix/windows)
+    tun/                           # macOS utun L3-клиент, watcher сокетов, host learner
+    transportstack/                # Сборка backend+шифрование+кодек+multi-stream, общая для main.go и exitmgr
+    transport/
+      transport.go                 # Интерфейс Transport
+      batched.go                   # BatchedTransport (склейка + zstd)
+      framing.go                   # Wire-формат батчированных кадров
+      compressor.go                # Legacy per-packet LZ4-кодек
+      encrypted.go                 # Опциональный шифрованный сессионный слой (Noise NKpsk0)
+      noise_keys.go                # Файл статического ключа ноды, разбор peer-key, вывод PSK
+      replay.go                    # Окно anti-replay для шифрованного слоя
+      multistream.go               # Один туннель через несколько документов
+      flowhash.go                  # Хеш соединения для мульти-стрима
+      yandex/                      # Бэкенды Yandex.Docs + Volga
+      oneme/                       # Бэкенд MAX Messenger
+      cupsonline/                  # Бэкенд Cups.online
+      mailru/                      # Бэкенд Mail.ru Docs
+    tunnel/
+      tunnel.go                    # Клиентский туннель (gVisor + TunnelLinkEndpoint)
+      endpoint.go                  # Виртуальный NIC (клиент)
+      exit.go                      # Диспетчер NewExitNode (l3 / l4)
+      proxy_exit.go                # L4 exit (gVisor + net.Dial)
+      l3/
+        l3.go                      # L3Exit: SNAT/DNAT, conntrack, фильтр egress
+        backend.go                 # Интерфейс L3Backend
+        backend_linux.go           # SOCK_RAW (Linux)
+        backend_windows.go         # Заглушка (WinDivert не подключён)
+        backend_other.go           # Заглушка для неподдерживаемых платформ
+        conntrack.go               # Таблица conntrack
+        flow.go                    # Flow-ключи, SNAT/DNAT, checksums
+      rawsocket_linux.go           # Legacy raw exit (оставлен для референса)
+      rawsocket_{darwin,windows}.go  # Заглушки
+      windivert/                   # WinDivert-бэкенд (есть, но к L3 не подключён)
+    socks5/                        # SOCKS5-сервер (fallback на клиенте)
+    network/                       # Контрольные суммы, разбор пакетов
+    netguard/                      # SSRF-деннилист для выходной ноды
+    exitmgr/                       # --role=exit-panel: реестр мультиклиента (конфиг, стор, сборка транспорта)
+    panel/                         # --role=exit-panel: веб-UI + HTTP API поверх exitmgr.Manager
+    telegrambot/                   # --role=exit-panel: опциональный Telegram-бот поверх exitmgr.Manager
+    clientqr/                      # QR-конфиг клиента для Android, общий для panel и telegrambot
+    yandexdisk/                    # Официальный Yandex Disk REST API: создание+публикация документов для --url
+    utils/                         # Логирование
   ios-app/                         # iOS-клиент на SwiftUI (XcodeGen)
-  build_ios.sh                     # Сборка статической библиотеки iOS (liboflux.a)
-  build_ios_app.sh                 # Сборка + архив + экспорт IPA iOS
-  build_android.sh                 # Сборка клиентского бинарника Android
   scripts/
+    build_ios.sh                   # Сборка статической библиотеки iOS (liboflux.a)
+    build_ios_app.sh               # Сборка + архив + экспорт IPA iOS
+    build_android.sh               # Сборка клиентского бинарника Android
     cleanup-utun.sh                # Удалить stale-маршруты utun (macOS)
-    build-flx-linux-img.sh         # Сборка минимального Alpine rootfs для QEMU
+  deploy/
+    update.sh                      # Самообновление VPS с автооткатом
+    menu.sh                        # Интерактивная консоль управления (openflux-ctl)
+  docker/
+    entrypoint.sh
+  docs/                            # Заметки по дизайну, разборы ревью
 ```
 
 ## Сборка
 
 ```
 go mod tidy
-go build -o openflux .
+go build -o openflux ./cmd/openflux
 ```
 
 Кросс-сборка для выходной ноды (Linux amd64), stripped:
 
 ```
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w" -trimpath -o openflux-linux .
+    go build -ldflags="-s -w" -trimpath -o openflux-linux ./cmd/openflux
 ```
 
 ## Использование
