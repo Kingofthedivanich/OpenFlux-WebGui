@@ -376,18 +376,26 @@ url/token, the panel's public key, and its PSK if any) -- no manual copying.
 `--yandex-token-file` just says where the token lives -- the file doesn't
 need to exist yet. Passing it adds a card below the panel's public key to
 set, replace, or clear the token from the UI itself, with no restart needed
-either way. Once a token is set, the yandex/vyandex url field in "Add
-client" gets a **Сгенерировать** button: it creates a blank document on
-that Yandex account's Disk, publishes it, and fills in its public link --
-no more making one by hand in the browser and copying the share URL. Click
-it again to add another document to the same client (multi-stream).
+either way. Once a token is set, the url field for **`vyandex`** clients in
+"Add client" gets a **Сгенерировать** button: it uploads a blank `.docx` to
+that Yandex account's Disk, publishes it with edit access for anyone with
+the link, and fills in its public link -- no more making one by hand and
+copying the share URL. Click it again to add another document to the same
+client (multi-stream).
+
+This only works for `vyandex`, not plain `yandex`: a file uploaded through
+the Disk API always opens through Yandex's WOPI/"Volga" online-office
+viewer, which is exactly the protocol `--transport=vyandex` speaks --
+`--transport=yandex` needs a document made *natively* in the Yandex Docs
+UI (a different, non-WOPI editor session with no equivalent public API), so
+the button doesn't appear for it.
 
 Get a token from [oauth.yandex.ru](https://oauth.yandex.ru/client/new):
 create an app with the "Yandex.Disk REST API" permission (write access),
 then open `https://oauth.yandex.ru/authorize?response_type=token&client_id=<your client id>`,
 approve it, and paste the `access_token` from the resulting page into the
-panel's card. This is the same official Disk API real Yandex Docs
-apps use -- unrelated to how `transport/yandex` itself talks to a document
+panel's card. This is the same official Disk API real Yandex apps use --
+unrelated to how `transport/yandex`/`vyandex` themselves talk to a document
 (an unauthenticated scrape of the public editor page), so the token is only
 ever used to create+publish documents, never to move traffic.
 
