@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"openflux/exitmgr"
+	"openflux/yandexdisk"
 )
 
 //go:embed static
@@ -24,19 +25,23 @@ const sessionCookieName = "openflux_session"
 // http.ListenAndServe (or similar) yourself -- Server does not own the
 // listener, so callers control bind address/TLS/etc.
 type Server struct {
-	mgr       *exitmgr.Manager
-	sessions  *sessionStore
-	user      string
-	pass      string
-	publicKey string
-	mux       *http.ServeMux
+	mgr        *exitmgr.Manager
+	sessions   *sessionStore
+	user       string
+	pass       string
+	publicKey  string
+	yandexDisk *yandexdisk.Client // nil when --yandex-token-file wasn't set
+	mux        *http.ServeMux
 }
 
 // NewServer builds the panel's HTTP handler. publicKey is the panel's own
 // Noise static public key (base64, printed at startup): clients need it as
 // their --peer-key, and the panel is the only place an operator should have
 // to look for it day to day, so it's also served over /api/panel-key.
-func NewServer(mgr *exitmgr.Manager, user, pass, publicKey string) *Server {
+// yandexToken is an optional Yandex OAuth token that, when set, lets the
+// panel generate --url documents for yandex/vyandex clients instead of an
+// operator making one by hand; pass "" to leave that feature disabled.
+func NewServer(mgr *exitmgr.Manager, user, pass, publicKey, yandexToken string) *Server {
 	s := &Server{
 		mgr:       mgr,
 		sessions:  newSessionStore(),
@@ -44,6 +49,9 @@ func NewServer(mgr *exitmgr.Manager, user, pass, publicKey string) *Server {
 		pass:      pass,
 		publicKey: publicKey,
 		mux:       http.NewServeMux(),
+	}
+	if yandexToken != "" {
+		s.yandexDisk = yandexdisk.New(yandexToken)
 	}
 	s.routes()
 	return s
@@ -65,6 +73,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/clients/{id}", s.requireAuth(s.handleUpdateClient))
 	s.mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuth(s.handleRemoveClient))
 	s.mux.HandleFunc("GET /api/clients/{id}/qr", s.requireAuth(s.handleClientQR))
+
+	s.mux.HandleFunc("GET /api/yandex-doc-available", s.requireAuth(s.handleYandexDocAvailable))
+	s.mux.HandleFunc("POST /api/yandex-doc", s.requireAuth(s.handleGenerateYandexDoc))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {

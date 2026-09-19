@@ -15,6 +15,10 @@ const urlGroup = document.getElementById("f-url-group");
 const maxGroup = document.getElementById("f-max-group");
 const cupsonlineNote = document.getElementById("f-cupsonline-note");
 const urlHint = document.getElementById("f-url-hint");
+const urlInput = document.getElementById("f-url");
+const urlGenerateBtn = document.getElementById("f-url-generate");
+const urlGenerateError = document.getElementById("f-url-generate-error");
+const nameInput = document.getElementById("f-name");
 
 const MULTISTREAM_TRANSPORTS = new Set(["yandex", "vyandex"]);
 const modalTitle = document.getElementById("add-modal-title");
@@ -34,6 +38,7 @@ const panelKeyCopyBtn = document.getElementById("panel-key-copy");
 let pollTimer = null;
 // Client id being edited, or null when the modal is in "add" mode.
 let editingID = null;
+let yandexDocAvailable = false;
 
 async function api(path, opts) {
   const res = await fetch(path, {
@@ -53,8 +58,19 @@ function showDashboard() {
   loginView.style.display = "none";
   dashboardView.style.display = "block";
   loadPanelKey();
+  loadYandexDocAvailability();
   refreshClients();
   if (!pollTimer) pollTimer = setInterval(refreshClients, 3000);
+}
+
+async function loadYandexDocAvailability() {
+  try {
+    const { available } = await api("/api/yandex-doc-available");
+    yandexDocAvailable = !!available;
+  } catch (_) {
+    yandexDocAvailable = false;
+  }
+  fieldsForTransport(transportSelect.value);
 }
 
 async function loadPanelKey() {
@@ -121,6 +137,7 @@ logoutBtn.addEventListener("click", async () => {
 function fieldsForTransport(t) {
   cupsonlineNote.style.display = "none";
   urlHint.style.display = "none";
+  urlGenerateError.textContent = "";
   if (t === "oneme") {
     urlGroup.style.display = "none";
     maxGroup.style.display = "flex";
@@ -136,6 +153,10 @@ function fieldsForTransport(t) {
     maxGroup.style.display = "none";
     if (MULTISTREAM_TRANSPORTS.has(t)) urlHint.style.display = "block";
   }
+  // Only yandex/vyandex documents can be auto-generated (that's what
+  // yandexdisk.CreateDoc produces); oneme/cupsonline/mailru don't apply.
+  const canGenerate = yandexDocAvailable && (t === "yandex" || t === "vyandex");
+  urlGenerateBtn.style.display = canGenerate ? "inline-block" : "none";
 }
 transportSelect.addEventListener("change", () => fieldsForTransport(transportSelect.value));
 fieldsForTransport(transportSelect.value);
@@ -171,6 +192,27 @@ function openEditModal(status) {
   fieldsForTransport(transportSelect.value);
   addModal.style.display = "flex";
 }
+
+urlGenerateBtn.addEventListener("click", async () => {
+  urlGenerateError.textContent = "";
+  urlGenerateBtn.disabled = true;
+  const original = urlGenerateBtn.textContent;
+  urlGenerateBtn.textContent = "Создаю…";
+  try {
+    const { url } = await api("/api/yandex-doc", {
+      method: "POST",
+      body: JSON.stringify({ name: nameInput.value }),
+    });
+    const existing = urlInput.value.split(",").map((s) => s.trim()).filter(Boolean);
+    existing.push(url);
+    urlInput.value = existing.join(", ");
+  } catch (err) {
+    urlGenerateError.textContent = "Не удалось создать документ: " + err.message;
+  } finally {
+    urlGenerateBtn.disabled = false;
+    urlGenerateBtn.textContent = original;
+  }
+});
 
 addClientBtn.addEventListener("click", openAddModal);
 addCancelBtn.addEventListener("click", () => { addModal.style.display = "none"; });

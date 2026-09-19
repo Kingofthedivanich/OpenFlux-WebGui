@@ -27,7 +27,7 @@ func stubBuilder(exitmgr.ClientConfig, transport.TransportConfig) (transport.Tra
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	mgr := exitmgr.NewManagerWithBuilder(nil, stubBuilder)
-	return NewServer(mgr, "admin", "s3cret", "fake-panel-public-key")
+	return NewServer(mgr, "admin", "s3cret", "fake-panel-public-key", "")
 }
 
 func do(t *testing.T, srv *Server, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {

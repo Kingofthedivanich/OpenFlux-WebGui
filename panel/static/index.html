@@ -68,8 +68,12 @@
 
     <div id="f-url-group" class="field-group">
       <label id="f-url-label">URL документа
-        <input type="text" id="f-url" placeholder="https://disk.yandex.com/i/..." />
+        <div class="input-with-button">
+          <input type="text" id="f-url" placeholder="https://disk.yandex.com/i/..." />
+          <button type="button" id="f-url-generate" class="ghost small" style="display:none">Сгенерировать</button>
+        </div>
       </label>
+      <div id="f-url-generate-error" class="error-text"></div>
       <div id="f-url-hint" class="hint-text" style="display:none">
         Несколько документов через запятую — один туннель поверх всех сразу (multi-stream): если один документ отвалится, туннель продолжит работать через остальные. У клиента должен быть тот же набор адресов.
       </div>

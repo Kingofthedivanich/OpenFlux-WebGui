@@ -52,7 +52,10 @@ that tracks this repo's encryption changes.
   document or room, managed live (add/edit/remove, status, traffic, the
   panel's public key to copy) with no restart needed. Every client shares
   the panel's own Noise identity; a per-client PSK file optionally closes
-  one client to strangers. See
+  one client to strangers. A QR button on each client card imports it into
+  the Android app in one scan, and an optional Yandex OAuth token lets the
+  panel generate a fresh `--url` document itself instead of one made by
+  hand. See
   [Exit node - multi-client admin panel](#exit-node---multi-client-admin-panel).
 - **Telegram admin bot** (optional, same role) — full parity with the web
   panel's client management, operable from a phone with no SSH tunnel. See
@@ -279,6 +282,7 @@ OpenFlux/
   panel/                           # --role=exit-panel: web UI + HTTP API over exitmgr.Manager
   telegrambot/                     # --role=exit-panel: optional Telegram admin bot over exitmgr.Manager
   clientqr/                        # Client -> Android Tunnel QR payload, shared by panel and telegrambot
+  yandexdisk/                      # Official Yandex Disk REST API client: creates+publishes --url documents
   utils/                           # Logging
   ios-app/                         # SwiftUI iOS client (XcodeGen)
   build_ios.sh                     # Build iOS static library (liboflux.a)
@@ -360,6 +364,29 @@ optional PSK file to close just that one client to anyone without the secret.
 Every client card has a **QR** button: scan it with the Android app's "+"
 button and it imports and configures that client automatically (transport,
 url/token, the panel's public key, and its PSK if any) -- no manual copying.
+
+#### Generating Yandex.Docs documents (optional)
+
+```
+./openflux --role=exit-panel \
+    --panel-addr=127.0.0.1:8088 --panel-user=admin --panel-pass=CHANGE_ME \
+    --yandex-token-file=./yandex.token
+```
+
+With a token configured, the yandex/vyandex url field in "Add client" gets a
+**Сгенерировать** button: it creates a blank document on that Yandex
+account's Disk, publishes it, and fills in its public link -- no more making
+one by hand in the browser and copying the share URL. Click it again to add
+another document to the same client (multi-stream).
+
+Get a token from [oauth.yandex.ru](https://oauth.yandex.ru/client/new):
+create an app with the "Yandex.Disk REST API" permission (write access),
+then open `https://oauth.yandex.ru/authorize?response_type=token&client_id=<your client id>`,
+approve it, and copy the `access_token` from the resulting redirect URL into
+`--yandex-token-file`. This is the same official Disk API real Yandex Docs
+apps use -- unrelated to how `transport/yandex` itself talks to a document
+(an unauthenticated scrape of the public editor page), so the token is only
+ever used to create+publish documents, never to move traffic.
 
 #### Telegram admin bot (optional)
 
