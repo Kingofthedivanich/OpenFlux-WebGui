@@ -33,43 +33,65 @@ The original code is provided **as is**, **without any warranties**.
 
 Fork of [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux)
 (based on `0.0.3`), combining this fork's own work with hardening adopted
-from the community fork [danusha2345/OpenFlux](https://github.com/danusha2345/OpenFlux).
-Changes on top of upstream:
+from the community fork [danusha2345/OpenFlux](https://github.com/danusha2345/OpenFlux)
+and a handful of individual upstream PRs. Paired with an
+[Android client fork](https://github.com/Kingofthedivanich/OpenFluxAndroid)
+that tracks this repo's encryption changes.
 
-- **Multi-client exit node + local web admin panel** (`--role=exit-panel`) —
-  run many clients in one process, each on its own Yandex.Docs / Volga / MAX /
-  Cups.online / Mail.ru document or room, with a login-gated local web UI to
-  add and remove them live — no restart needed. Every client shares the
-  panel's own Noise static identity; a per-client PSK file optionally closes
-  one client to strangers. See
-  [Exit node - multi-client admin panel](#exit-node---multi-client-admin-panel).
+**Encryption & identity**
 - **Noise NKpsk0 encryption** (X25519 + AES-256-GCM, rotating session keys)
   replaces the old static-AES-GCM transport encryption; required by default
-  unless `--allow-plaintext` is passed.
-- **Multi-stream transport** — `--url` takes a comma-separated document list
-  (yandex/vyandex), spreading connections across them with failover to the
-  others if one dies.
-- **`--upstream-proxy`** — the exit node can itself dial out through an
-  upstream SOCKS5 proxy instead of the internet directly.
+  unless `--allow-plaintext` is passed. See [Encryption](#encryption-optional).
 - **`netguard`** — an SSRF denylist blocking private/loopback/link-local and
   cloud-metadata destinations on the exit node by default (`--allow-private`
   to disable).
-- **~20 correctness/robustness/security fixes** on the exit-node and
-  transport paths, each with a regression test: two remote-triggerable
-  panics, a decompression-bomb DoS, `--local-ip` being silently ignored, a
-  client RST never reaching the real destination, an unbounded memory/goroutine
-  leak on stalled L4 relays, silently-swallowed transport send errors, a
-  conntrack lock that blocked all packet forwarding during its sweep, no
-  graceful shutdown on SIGTERM, a conntrack entry-count cap, half-close on
-  every data path instead of a hard close, SOCKS5 RFC 1928 compliance
-  (IPv6, error replies, exact-length reads), and reconnect/keepalive fixes
-  across the Yandex/Volga/MAX/Mail.ru transports.
-- **iOS bridge not maintained here** — `export_ios.go` builds under
-  `//go:build ios` (inherited from upstream/the community fork) but this
-  fork ships no iOS app or CI job for it.
-- `build_android.sh` is now host-OS aware (macOS/Linux/Windows) and builds
+
+**Multi-client exit node**
+- **Local web admin panel** (`--role=exit-panel`) — run many clients in one
+  process, each on its own Yandex.Docs / Volga / MAX / Cups.online / Mail.ru
+  document or room, managed live (add/edit/remove, status, traffic, the
+  panel's public key to copy) with no restart needed. Every client shares
+  the panel's own Noise identity; a per-client PSK file optionally closes
+  one client to strangers. See
+  [Exit node - multi-client admin panel](#exit-node---multi-client-admin-panel).
+- **Telegram admin bot** (optional, same role) — full parity with the web
+  panel's client management, operable from a phone with no SSH tunnel. See
+  [Telegram admin bot](#telegram-admin-bot-optional).
+
+**Transport**
+- **Multi-stream** — `--url` takes a comma-separated document list
+  (yandex/vyandex, CLI and panel clients both), spreading connections across
+  them with failover to the others if one dies.
+- **`--upstream-proxy`** — the exit node can itself dial out through an
+  upstream SOCKS5 proxy instead of the internet directly.
+- **Jittered Yandex.Docs keep-alives** — randomized interval and payload
+  length instead of a fixed-size/fixed-interval packet, which is a
+  traffic-analysis fingerprint that survives TLS.
+- **`--traffic-stats=<duration>`** — periodic machine-readable
+  `[TRAFFIC] connected=%t tx=%d rx=%d` log line from the transport's real
+  byte counters, for anything that wants to read it off stdout.
+
+**Correctness & robustness** — ~25 fixes across the exit-node and transport
+paths since forking, each with a regression test: two remote-triggerable
+panics, a decompression-bomb DoS, `--local-ip` being silently ignored, a
+client RST never reaching the real destination, an unbounded memory/goroutine
+leak on stalled L4 relays, a conntrack lock that blocked all packet
+forwarding during its sweep, no graceful shutdown on SIGTERM, a conntrack
+entry-count cap, half-close on every data path instead of a hard close,
+SOCKS5 RFC 1928 compliance, an unguarded data race in transport
+re-authorization, `EncryptedTransport.IsConnected()` reporting true before
+the Noise handshake actually completed (a real packet-blackhole window),
+and reconnect/keepalive fixes across the Yandex/Volga/MAX/Mail.ru
+transports.
+
+**Not maintained here**
+- **iOS bridge** — `export_ios.go` builds under `//go:build ios` (inherited
+  from upstream/the community fork) but this fork ships no iOS app or CI
+  job for it.
+- `build_android.sh` is host-OS aware (macOS/Linux/Windows) and builds
   all three ABIs the [Android app fork](https://github.com/Kingofthedivanich/OpenFluxAndroid)
-  ships, instead of just `arm64-v8a` from a macOS host.
+  ships, instead of just `arm64-v8a` from a macOS host — but the Android app
+  itself lives in that separate repo.
 
 ## Clients
 
@@ -78,14 +100,17 @@ Changes on top of upstream:
 | **macOS**   | build from source | CLI + utun L3 client (`--inbound=tun`, default on macOS) |
 | **Linux**   | build from source | CLI client (SOCKS5) / exit node (L3 or L4) |
 | **Windows** | build from source | CLI client (SOCKS5) / exit node (`l4`, or `l3` via QEMU - see TODO) |
-| **Android** | [OpenFluxAndroid releases](https://github.com/p1neappleXpress/OpenFluxAndroid) | Standalone APK |
-| **iOS**     | [TestFlight beta](https://testflight.apple.com/join/BwnAcdus) | System-wide VPN via Network Extension |
+| **Android** | [OpenFluxAndroid fork releases](https://github.com/Kingofthedivanich/OpenFluxAndroid/releases) | APK, built against this repo's encryption |
+| **iOS**     | [TestFlight beta](https://testflight.apple.com/join/BwnAcdus) | Upstream's client; not paired with this fork's encryption changes |
 
-> **iOS app** built by [@saharev1](https://github.com/saharev1) - full iOS client,
-> TestFlight pipeline, system VPN support, DNS-over-TLS, and many stability fixes.
-> HUGE thanks!
+> **iOS app** built by [@saharev1](https://github.com/saharev1) for upstream -
+> full iOS client, TestFlight pipeline, system VPN support, DNS-over-TLS, and
+> many stability fixes. Not tracked by this fork; expect it to need
+> `--allow-plaintext` against an exit node running this repo's code, since
+> its own Noise/peer-key support (if any) targets upstream instead.
 >
-> **Android app** - [p1neappleXpress/OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid).
+> **Android app** - [Kingofthedivanich/OpenFluxAndroid](https://github.com/Kingofthedivanich/OpenFluxAndroid),
+> this fork's paired client (peer-key field, PSK, all built from this repo).
 
 ## Architecture
 
@@ -184,15 +209,22 @@ the kernel rule above is only needed for kernel-generated RSTs.
   closes the node to clients without the secret.
 - **Benchmark modes** - `--role=bench-send --bench-bytes=N` / `--role=bench-sink`
   measure raw goodput through the transport without touching the host network.
+- **Traffic telemetry** - `--traffic-stats=<duration>` logs
+  `[TRAFFIC] connected=%t tx=%d rx=%d` from the transport's real byte
+  counters on an interval, for anything reading the process's stdout.
 
 ## Requirements
 
 1. **Go** - to build the desktop client / exit-node binary. See `go.mod` for
    the exact version.
-2. **Android NDK r27+** - to build the Android client binary.
-3. **Xcode 26.6+** - to build the iOS client binary.
-4. **A Linux VPS / VDS** for the exit node. The `l3` backend requires root;
+2. **Android NDK r27+** - to build the [Android client](https://github.com/Kingofthedivanich/OpenFluxAndroid)'s
+   native library from this repo.
+3. **A Linux VPS / VDS** for the exit node. The `l3` backend requires root;
    `l4` works without.
+
+Xcode is only needed for `export_ios.go`'s `//go:build ios` target, which
+this fork doesn't build or ship — skip it unless you're doing that work
+yourself.
 
 ## Structure
 
@@ -301,12 +333,18 @@ macOS, non-root Linux). Slower than `l3` (double TCP termination).
 Runs many clients in one process, each with its own transport (its own
 document/room) and its own independent `l4` tunnel — one client's traffic
 never crosses into another's. Clients are managed live through a local,
-login-gated web UI at `--panel-addr` (add/remove, see status and stats) with
-no restart needed; registrations persist to `--panel-data` and reload on the
-next start. `--panel-addr` should stay bound to `127.0.0.1`; reach it
-remotely over an SSH tunnel (`ssh -L 8088:127.0.0.1:8088 user@host`) rather
-than exposing it directly. `l3` isn't offered here — see the plain `--role=exit`
-above if you need raw SNAT/DNAT.
+login-gated web UI at `--panel-addr` (add, edit, remove, see status/traffic,
+copy the panel's public key) with no restart needed; registrations persist
+to `--panel-data` and reload on the next start. `--panel-addr` should stay
+bound to `127.0.0.1`; reach it remotely over an SSH tunnel
+(`ssh -L 8088:127.0.0.1:8088 user@host`) rather than exposing it directly.
+`l3` isn't offered here — see the plain `--role=exit` above if you need raw
+SNAT/DNAT.
+
+A cupsonline client is a special case: the exit generates its own rooms, so
+the UI has no URL field for it — the generated room list (the value a client
+needs as its own `--url`) shows up on that client's card once its transport
+starts.
 
 `--panel-key-file` is the panel's own Noise static key, created on first run
 and printed at startup; every client shares this same identity and connects
@@ -437,7 +475,9 @@ Notes:
 
 Pass a comma-separated list to `--url` (`yandex`, `vyandex`) to run one tunnel
 over several documents at once. If one document dies, or the relay stops
-delivering on it, the tunnel keeps working over the others (issue #50).
+delivering on it, the tunnel keeps working over the others (issue #50). Panel
+clients (`--role=exit-panel`) support this too — same comma-separated value
+in the client's URL field, in the web UI or the Telegram bot.
 
 ```
 # exit node
@@ -490,6 +530,23 @@ Measure raw goodput through the transport, without touching the host network:
 ./openflux --role=bench-sink --transport=yandex --url="..."
 ```
 
+### Traffic telemetry
+
+Machine-readable traffic on a fixed interval, straight from the transport's
+own byte counters (not the OS's per-app network stats, which count every
+app's VPN traffic together):
+
+```
+./openflux --role=client --traffic-stats=1s ...
+```
+
+```
+[TRAFFIC] connected=true tx=182933 rx=1044021
+```
+
+`connected` reflects the real state — for an encrypted transport, that means
+a confirmed Noise session, not just a live carrier connection underneath it.
+
 ### Other transports
 
 ```
@@ -522,6 +579,7 @@ Measure raw goodput through the transport, without touching the host network:
 | `--codec` | `-c` | `batched` | `batched` \| `legacy` |
 | `--url` | `-u` | `http://#` | Document URL; comma-separated list for multi-stream |
 | `--multistream-status` | | `0` | Log per-document state on this interval (e.g. `10s`) |
+| `--traffic-stats` | | `0` | Log machine-readable transport traffic on this interval (e.g. `1s`) |
 | `--socks5` | `-s` | `127.0.0.1:1080` | SOCKS5 listen address (loopback) |
 | `--upstream-proxy` | | | Upstream SOCKS5 proxy for exit node (forces l4, auto-detected from -s/--socks5) |
 | `--local-ip` | `-l` | (auto) | Egress IP for l3 SNAT / RST filter |
