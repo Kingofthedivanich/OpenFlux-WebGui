@@ -6,8 +6,7 @@
 
 `--role=exit-panel` runs many clients on one server behind a small,
 login-gated web panel: add, edit and remove clients, see their status and
-logs, and get the `openflux://` link and QR code the OpenFlux apps scan. Given
-a Yandex Disk OAuth token, it creates Yandex Volga documents itself. An
+logs, and get the `openflux://` link and QR code the OpenFlux apps scan. An
 optional Telegram bot does the same, and on a VPS the `openflux-ctl` console
 ([`deploy/menu.sh`](../deploy/menu.sh)) manages it all.
 
@@ -21,11 +20,18 @@ optional Telegram bot does the same, and on a VPS the `openflux-ctl` console
   Telemost, Boards, Avito, Cups.online) plus a backup direct TCP port; the
   client holds them in one session and fails over by priority when one
   service is blocked.
-- When Yandex asks the server for a captcha (it does for datacenter
-  addresses), the app passes it through the tunnel — over a carrier that
-  already works. Give a client a direct port and open it in the firewall.
-  Volga documents are given as editor links (`disk.yandex.ru/edit/d/…`): the
-  `…/d/…` preview page is useless to vyandex.
+- **vyandex** (Yandex Docs) works only from a signed-in account: Yandex no
+  longer lets anyone else into the editor. A document is given as its address
+  while it is open in Docs (`https://docs.yandex.ru/edit/d/…`); a share link
+  (`/i/`, `/d/`) opens a preview without an editor. The sign-in is set once
+  for the whole panel: the cookies of a Yandex account of its own (a card in
+  the web UI, or `openflux-ctl` item 13). Should Yandex also ask for a
+  captcha, the app passes it through the tunnel over a carrier that works.
+- A carrier without Yandex, such as **Cups.online** or **Avito**, needs no
+  sign-in and gets past DPI: the phone talks to a Russian service, not to
+  the VPS. From Russian networks a direct port to the VPS is often frozen
+  after the first bytes, so it is no use as the only carrier. The panel
+  refuses a direct port another program on the server already listens on.
 - The key and encryption context survive edits; rooms the exit made for
   Cups.online and Avito are written back into the config, so a link handed
   out keeps working across restarts and edits.
@@ -52,7 +58,6 @@ expose the panel.
 | `--panel-user`, `--panel-pass` | — | login, required |
 | `--panel-data` | `openflux-panel` | clients, keys, channels |
 | `--share-host` | first public IPv4 | address in links for the direct port |
-| `--yandex-token-file` | — | Disk OAuth token file (`disk.write`) to create Volga documents |
 | `--allow-private` | off | let clients reach the host's private networks |
 | `--telegram-bot-token-file` | — | file with the bot token from @BotFather |
 | `--telegram-admin-ids` | — | comma-separated Telegram user ids the bot answers |

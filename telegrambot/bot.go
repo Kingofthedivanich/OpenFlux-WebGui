@@ -26,19 +26,12 @@ type Manager interface {
 	Remove(id string) error
 }
 
-// DocMaker creates vyandex documents with the token set in the web panel.
-type DocMaker interface {
-	YandexDocAvailable() bool
-	CreateYandexDoc(ctx context.Context, name string) (string, error)
-}
-
 // Bot is a Telegram front end for the exit panel. Only user ids in adminIDs
 // get an answer; everyone else is ignored without a word, so the bot does
 // not even reveal that it does anything.
 type Bot struct {
 	api      *api
 	mgr      Manager
-	docs     DocMaker // may be nil
 	adminIDs map[int64]bool
 
 	mu      sync.Mutex
@@ -46,8 +39,8 @@ type Bot struct {
 	offset  int64
 }
 
-// New builds a Bot. docs may be nil (no document button).
-func New(token string, adminIDs []int64, mgr Manager, docs DocMaker) *Bot {
+// New builds a Bot.
+func New(token string, adminIDs []int64, mgr Manager) *Bot {
 	ids := make(map[int64]bool, len(adminIDs))
 	for _, id := range adminIDs {
 		ids[id] = true
@@ -55,7 +48,6 @@ func New(token string, adminIDs []int64, mgr Manager, docs DocMaker) *Bot {
 	return &Bot{
 		api:      newAPI(token),
 		mgr:      mgr,
-		docs:     docs,
 		adminIDs: ids,
 		wizards:  make(map[int64]*wizard),
 	}
@@ -555,23 +547,10 @@ func (b *Bot) advanceWizard(chatID int64, w *wizard, input string, fromButton bo
 		}
 
 	case stepURL:
-		url := input
 		if fromButton {
-			if input != "gen" || b.docs == nil {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			made, err := b.docs.CreateYandexDoc(ctx, w.cfg.Name)
-			cancel()
-			if err != nil {
-				b.send(chatID, "Не удалось создать документ: "+err.Error())
-				b.promptURL(chatID, w)
-				return
-			}
-			url = made
-			b.send(chatID, "Документ создан: "+url)
+			return
 		}
-		w.cfg.Transports = append(w.cfg.Transports, exitmgr.TransportEntry{Type: w.pending, URL: strings.TrimSpace(url)})
+		w.cfg.Transports = append(w.cfg.Transports, exitmgr.TransportEntry{Type: w.pending, URL: strings.TrimSpace(input)})
 		w.pending = ""
 		w.step = stepTransports
 		b.promptTransports(chatID, w)
@@ -627,11 +606,10 @@ func (b *Bot) promptTransports(chatID int64, w *wizard) {
 
 func (b *Bot) promptURL(chatID int64, w *wizard) {
 	text := fmt.Sprintf("Пришли ссылку для %s:", typeLabel(w.pending))
-	var kb *inlineKeyboard
-	if w.pending == "vyandex" && b.docs != nil && b.docs.YandexDocAvailable() {
-		kb = &inlineKeyboard{InlineKeyboard: [][]inlineKeyboardButton{row(button("Создать документ на Яндекс Диске", "w:gen"))}}
+	if w.pending == "vyandex" {
+		text = "Пришли адрес документа из адресной строки браузера, когда он открыт в Яндекс Документах (https://docs.yandex.ru/edit/d/…). Ссылка «Поделиться» (/i/, /d/) не подойдёт. Нужен и вход в Яндекс на сервере: cookies в веб-панели или openflux-ctl."
 	}
-	b.sendKB(chatID, text, kb)
+	b.send(chatID, text)
 }
 
 func (b *Bot) promptDirect(chatID int64, w *wizard) {

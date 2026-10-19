@@ -33,15 +33,21 @@
   </header>
 
   <main>
-    <div id="yandex-token-card" class="panel-key-card" style="display:none">
-      <div class="panel-key-label">Yandex OAuth токен (для автосоздания документов Volga)</div>
-      <div id="yandex-token-status" class="hint-text"></div>
-      <div class="panel-key-row">
-        <input type="password" id="yandex-token-input" placeholder="Вставь токен, чтобы задать или заменить" autocomplete="off" />
-        <button type="button" id="yandex-token-save" class="ghost small">Сохранить</button>
-        <button type="button" id="yandex-token-clear" class="ghost small">Отключить</button>
+    <div id="yandex-cookies-card" class="panel-key-card">
+      <div class="panel-key-label">Вход в Яндекс для vyandex (cookies аккаунта)</div>
+      <div id="yandex-cookies-status" class="hint-text"></div>
+      <div class="hint-text">
+        Яндекс пускает в редактор документа только вошедших. Заведи отдельный аккаунт,
+        войди им на yandex.ru и вставь cookies: файл cookies.txt из расширения
+        (например «Get cookies.txt LOCALLY») или строку «Session_id=…; yandexuid=…».
+        Сессия будет лежать на сервере.
       </div>
-      <div id="yandex-token-error" class="error-text"></div>
+      <textarea id="yandex-cookies-input" rows="3" placeholder="cookies.txt или Session_id=…; yandexuid=…" autocomplete="off" spellcheck="false"></textarea>
+      <div class="panel-key-row">
+        <button type="button" id="yandex-cookies-save" class="ghost small">Сохранить</button>
+        <button type="button" id="yandex-cookies-clear" class="ghost small">Убрать</button>
+      </div>
+      <div id="yandex-cookies-error" class="error-text"></div>
     </div>
 
     <div id="clients-empty" class="empty-state" style="display:none">
@@ -68,7 +74,6 @@
         по приоритету (сверху вниз по типу), если один сервис заблокируют.
         Cups.online и Avito создают комнаты сами — ссылка не нужна.
       </div>
-      <div id="f-generate-error" class="error-text"></div>
     </div>
 
     <label>Прямое подключение, TCP-порт (рекомендуется)

@@ -3,9 +3,11 @@ package exitmgr
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +33,7 @@ func fakeCore() {
 	sock := fs.String("ipc-socket", "", "")
 	fs.Bool("share", false, "")
 	fs.Bool("allow-private", false, "")
+	cookies := fs.String("yandex-cookies-file", "", "")
 	_ = fs.Parse(os.Args[1:])
 
 	b, err := os.ReadFile(*conf)
@@ -46,6 +49,9 @@ func fakeCore() {
 	if err := srv.Listen(); err != nil {
 		fmt.Fprintln(os.Stderr, "ipc:", err)
 		os.Exit(2)
+	}
+	if *cookies != "" {
+		fmt.Println("fake core: yandex cookies from " + *cookies)
 	}
 	fmt.Println("2026/10/19 12:00:00 Running as EXIT NODE (mode=l4)")
 	if os.Getenv("EXITMGR_FAKE_ROOMS") != "" {
@@ -113,7 +119,7 @@ var docCfg = ClientConfig{
 	Name: "Alice",
 	Transports: []TransportEntry{
 		{Type: "cupsonline"},
-		{Type: "vyandex", URL: "https://disk.yandex.ru/i/doc1"},
+		{Type: "vyandex", URL: "https://docs.yandex.ru/edit/d/doc1doc1doc1doc1doc1"},
 		{Type: "yandex", URL: "https://disk.yandex.ru/i/doc2"},
 	},
 }
@@ -134,7 +140,7 @@ func TestAddRunsChannelAndReportsLinkAndStatus(t *testing.T) {
 	if s.BytesIn != 10 || s.BytesOut != 20 || len(s.Active) != 1 || s.Active[0] != "vyandex" {
 		t.Fatalf("ipc status not taken over: %+v", s)
 	}
-	if s.Config.Context != "https://disk.yandex.ru/i/doc1" {
+	if s.Config.Context != "https://docs.yandex.ru/edit/d/doc1doc1doc1doc1doc1" {
 		t.Fatalf("context = %q, want the highest-priority document", s.Config.Context)
 	}
 	logs, _ := m.Logs("alice")
@@ -148,9 +154,9 @@ func TestAddRunsChannelAndReportsLinkAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Role = exit", "Mode = l4", "URL = https://disk.yandex.ru/i/doc1",
+		"Role = exit", "Mode = l4", "URL = https://docs.yandex.ru/edit/d/doc1doc1doc1doc1doc1",
 		"[Transport cupsonline]\nType = cupsonline\nPriority = 70\n",
-		"[Transport vyandex]\nType = vyandex\nPriority = 100\nURL = https://disk.yandex.ru/i/doc1",
+		"[Transport vyandex]\nType = vyandex\nPriority = 100\nURL = https://docs.yandex.ru/edit/d/doc1doc1doc1doc1doc1",
 		"EncryptionKeyFile = " + m.channel("alice").keyPath(),
 	} {
 		if !strings.Contains(string(conf), want) {
@@ -177,7 +183,7 @@ func TestUpdateKeepsKeyAndContext(t *testing.T) {
 		t.Fatal("update replaced the encryption key: links handed out would stop working")
 	}
 	s, _ := m.Get("alice")
-	if s.Config.Context != "https://disk.yandex.ru/i/doc1" || s.Config.Name != "Alice 2" {
+	if s.Config.Context != "https://docs.yandex.ru/edit/d/doc1doc1doc1doc1doc1" || s.Config.Name != "Alice 2" {
 		t.Fatalf("config after update = %+v", s.Config)
 	}
 	conf, _ := os.ReadFile(m.channel("alice").confPath())
@@ -298,38 +304,104 @@ func TestRoomsTheExitMadeAreKept(t *testing.T) {
 	}
 }
 
-func TestVolgaPublicLinkBecomesEditorLink(t *testing.T) {
+func TestVolgaLinks(t *testing.T) {
 	m := newTestManager(t)
-	saved := []ClientConfig{{
-		ID: "old", Context: "https://disk.yandex.ru/d/4wYUcwmQ13opeQ",
-		Transports: []TransportEntry{{Type: "vyandex", URL: "https://disk.yandex.ru/d/4wYUcwmQ13opeQ"}},
-	}}
-	if err := m.store.Save(saved); err != nil {
+	const id = "aClML4UxXBd6dDfLn4d_ACPegnqahzm72s0qoIz-cKg6Tko1UUFIZnN0QQ"
+	err := m.Add(ClientConfig{ID: "v", Transports: []TransportEntry{
+		{Type: "vyandex", URL: "https://docs.yandex.com/edit/d/" + id + "?source=docs&sk=y6bb"},
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Load(); err != nil {
+	s, _ := m.Get("v")
+	if got := s.Config.Transports[0].URL; got != "https://docs.yandex.ru/edit/d/"+id {
+		t.Fatalf("url = %q: want the browser's session key cut off and the yandex.ru host the sign-in is for", got)
+	}
+	for _, bad := range []string{
+		"https://disk.yandex.ru/d/4wYUcwmQ13opeQ",
+		"https://yadi.sk/d/gOBW-OE8UDTSkw",
+		"https://disk.yandex.com/i/6Ut8tYNfABaA9w",
+		"https://disk.yandex.ru/edit/d/4wYUcwmQ13opeQ", // a Disk id is no Docs id
+	} {
+		err := m.Add(ClientConfig{ID: "bad", Transports: []TransportEntry{{Type: "vyandex", URL: bad}}})
+		if err == nil || !strings.Contains(err.Error(), "docs.yandex.ru/edit/d/") {
+			t.Errorf("%s: err = %v, want a pointer to the editor address", bad, err)
+		}
+	}
+}
+
+func TestBusyDirectPortIsRefused(t *testing.T) {
+	m := newTestManager(t)
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
 		t.Fatal(err)
 	}
-	const editor = "https://disk.yandex.ru/edit/d/4wYUcwmQ13opeQ"
-	s, _ := m.Get("old")
-	if s.Config.Transports[0].URL != editor {
-		t.Fatalf("url = %q, want the editor link", s.Config.Transports[0].URL)
+	defer ln.Close()
+	busy := ln.Addr().(*net.TCPAddr).Port
+	err = m.Add(ClientConfig{ID: "p", Transports: []TransportEntry{{Type: "cupsonline"}}, DirectPort: busy})
+	if err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("err = %v, want the busy port refused", err)
 	}
-	if s.Config.Context != saved[0].Context {
-		t.Fatalf("context changed to %q: links handed out would stop decrypting", s.Config.Context)
-	}
-	back, _ := m.store.Load()
-	conf, _ := os.ReadFile(m.channel("old").confPath())
-	if back[0].Transports[0].URL != editor || !strings.Contains(string(conf), "URL = "+editor) {
-		t.Fatalf("fix not saved: %+v\n%s", back, conf)
+	if _, ok := m.Get("p"); ok {
+		t.Fatal("a client with a busy port was registered")
 	}
 
-	if err := m.Add(ClientConfig{ID: "new", Transports: []TransportEntry{{Type: "vyandex", URL: "https://yadi.sk/d/abcdefgh"}}}); err != nil {
+	if err := m.Add(ClientConfig{ID: "p", Transports: []TransportEntry{{Type: "cupsonline"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := m.Get("new"); s.Config.Transports[0].URL != "https://disk.yandex.ru/edit/d/abcdefgh" {
-		t.Fatalf("Add kept the preview link: %+v", s.Config.Transports)
+	if err := m.Update("p", ClientConfig{Transports: []TransportEntry{{Type: "cupsonline"}}, DirectPort: busy}); err == nil {
+		t.Fatal("update to a busy port accepted")
 	}
+}
+
+const signedIn = ".yandex.ru\tTRUE\t/\tTRUE\t0\tSession_id\tsecret-session\n.yandex.ru\tTRUE\t/\tFALSE\t0\tyandexuid\t123\n"
+
+func TestYandexCookiesReachEveryChannel(t *testing.T) {
+	m := newTestManager(t)
+	if err := m.Add(docCfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetYandexCookies([]byte(".yandex.ru\tTRUE\t/\tFALSE\t0\tyandexuid\t123\n")); err == nil {
+		t.Fatal("cookies of a signed-out tab accepted")
+	}
+	if err := m.SetYandexCookies([]byte("garbage")); err == nil {
+		t.Fatal("garbage accepted")
+	}
+	if set, _ := m.YandexCookies(); set {
+		t.Fatal("rejected cookies were kept")
+	}
+
+	if err := m.SetYandexCookies([]byte(signedIn)); err != nil {
+		t.Fatal(err)
+	}
+	if set, _ := m.YandexCookies(); !set {
+		t.Fatal("cookies not kept")
+	}
+	if st, err := os.Stat(m.yandexCookiesPath()); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
+		t.Fatalf("cookies file: %v %v, want root-only", st, err)
+	}
+	waitFor(t, "the restarted channel to get the cookies", func() bool {
+		logs, _ := m.Logs("alice")
+		return strings.Contains(strings.Join(logs, "\n"), "yandex cookies from "+m.yandexCookiesPath())
+	})
+
+	// A Cookie header copied from the browser's developer tools works too.
+	if err := m.SetYandexCookies([]byte("Cookie: yandexuid=123; Session_id=3:abc.def; L=xyz")); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := os.ReadFile(m.yandexCookiesPath())
+	if !strings.Contains(string(saved), ".yandex.ru\tTRUE\t/\tTRUE\t0\tSession_id\t3:abc.def\n") {
+		t.Fatalf("header not turned into cookies.txt:\n%s", saved)
+	}
+
+	if err := m.ClearYandexCookies(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "a channel without the cookies", func() bool {
+		logs, _ := m.Logs("alice")
+		joined := strings.Join(logs, "\n")
+		return strings.Contains(joined, "Running as EXIT NODE") && !strings.Contains(joined, "yandex cookies from")
+	})
 }
 
 func TestRelativeDataDirBecomesAbsolute(t *testing.T) {

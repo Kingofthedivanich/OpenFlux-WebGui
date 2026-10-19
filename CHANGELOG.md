@@ -5,6 +5,37 @@ All notable changes to the OpenFlux core. Format loosely follows
 
 ## [Unreleased]
 
+## [0.13.0-wg.7] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
+
+### Added
+
+- **A Yandex sign-in for the whole panel.** Yandex now lets only a signed-in
+  account open a document's editor, so vyandex needs one. The panel takes the
+  cookies of an account (cookies.txt from a browser extension, or a
+  `Session_id=...; ...` Cookie header), checks them the way the core reads
+  them, keeps them root-only in the panel's directory and gives them to every
+  channel as `--yandex-cookies-file`; changing them restarts the channels.
+  A web UI card, `openflux-ctl` items 13-15.
+- **A busy direct port is refused** when a client is added or its port
+  changed: before, the channel retried "address already in use" forever and
+  its clients got a dead backup (an nginx on the server held the port).
+
+### Changed
+
+- vyandex takes only a Yandex Docs editor address
+  (`https://docs.yandex.ru/edit/d/<id>`); a Disk share link (`/i/`, `/d/`,
+  `yadi.sk`) is refused with what to paste instead. What the browser adds
+  after the id (`?source=docs&sk=...`, the browser session's own key) is cut
+  off, and the host becomes docs.yandex.ru, the domain the sign-in is for.
+
+### Removed
+
+- Creating documents through Yandex Disk (the panel's "Создать" button, the
+  bot's button, `--yandex-token-file`, which is now accepted and ignored):
+  Yandex no longer opens such files in an editor for anyone, and no editor
+  link can be made from a Disk one. The 0.13.0-wg.4/5 link rewriting built
+  editor links that did not exist; it is gone.
+
 ## [0.13.0-wg.6] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
 
 ### Fixed

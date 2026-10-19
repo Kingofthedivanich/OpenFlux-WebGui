@@ -12,7 +12,6 @@ const modalTitle = $("add-modal-title");
 const submitBtn = $("add-submit-btn");
 const nameInput = $("f-name");
 const transportsBox = $("f-transports");
-const generateError = $("f-generate-error");
 const directPortInput = $("f-direct-port");
 const modeSelect = $("f-mode");
 
@@ -27,10 +26,9 @@ const qrError = $("qr-error");
 const logsModal = $("logs-modal");
 const logsBody = $("logs-body");
 
-const yandexTokenCard = $("yandex-token-card");
-const yandexTokenStatus = $("yandex-token-status");
-const yandexTokenInput = $("yandex-token-input");
-const yandexTokenError = $("yandex-token-error");
+const yandexCookiesStatus = $("yandex-cookies-status");
+const yandexCookiesInput = $("yandex-cookies-input");
+const yandexCookiesError = $("yandex-cookies-error");
 
 const TRANSPORT_LABELS = {
   vyandex: "Yandex Docs (Volga)",
@@ -43,7 +41,7 @@ const TRANSPORT_LABELS = {
 };
 const MAKES_OWN_ROOMS = new Set(["cupsonline", "avito"]);
 const URL_PLACEHOLDERS = {
-  vyandex: "https://disk.yandex.ru/edit/d/...",
+  vyandex: "https://docs.yandex.ru/edit/d/... (адрес открытого документа)",
   yandex: "https://disk.yandex.ru/i/...",
   mailru: "https://cloud.mail.ru/public/...",
   telemost: "https://telemost.yandex.ru/j/...",
@@ -53,7 +51,6 @@ const URL_PLACEHOLDERS = {
 let transportTypes = Object.keys(TRANSPORT_LABELS);
 let pollTimer = null;
 let editingID = null; // null: the modal adds a client
-let yandexDocAvailable = false;
 let logsClientID = null;
 
 async function api(path, opts) {
@@ -74,7 +71,7 @@ function showDashboard() {
   loginView.style.display = "none";
   dashboardView.style.display = "block";
   api("/api/transport-types").then((t) => { if (t && t.length) transportTypes = t; }).catch(() => {});
-  loadYandexDocAvailability();
+  loadYandexCookies();
   refreshClients();
   if (!pollTimer) pollTimer = setInterval(refreshClients, 3000);
 }
@@ -113,48 +110,45 @@ $("logout-btn").addEventListener("click", async () => {
   showLogin();
 });
 
-// ---- Yandex token ----
+// ---- Yandex sign-in ----
 
-async function loadYandexDocAvailability() {
+async function loadYandexCookies() {
   try {
-    const { available, configured } = await api("/api/yandex-doc-available");
-    yandexDocAvailable = !!available;
-    yandexTokenCard.style.display = configured ? "block" : "none";
-    yandexTokenStatus.textContent = available
-      ? "Токен настроен. Вставь новый, чтобы заменить."
-      : "Токен не задан — документы Volga можно только вставлять вручную.";
+    const { set, set_at } = await api("/api/yandex-cookies");
+    yandexCookiesStatus.textContent = set
+      ? `Вход задан (${new Date(set_at).toLocaleString()}). Вставь новые cookies, чтобы заменить.`
+      : "Не задан: vyandex на сервере не войдёт в документ.";
   } catch (_) {
-    yandexDocAvailable = false;
-    yandexTokenCard.style.display = "none";
+    yandexCookiesStatus.textContent = "";
   }
-  transportsBox.querySelectorAll(".transport-row").forEach(updateRow);
 }
 
-$("yandex-token-save").addEventListener("click", async (e) => {
-  yandexTokenError.textContent = "";
-  const token = yandexTokenInput.value.trim();
-  if (!token) { yandexTokenError.textContent = "Вставь токен перед сохранением."; return; }
+$("yandex-cookies-save").addEventListener("click", async (e) => {
+  yandexCookiesError.textContent = "";
+  const cookies = yandexCookiesInput.value.trim();
+  if (!cookies) { yandexCookiesError.textContent = "Вставь cookies перед сохранением."; return; }
   e.target.disabled = true;
   try {
-    await api("/api/yandex-token", { method: "PUT", body: JSON.stringify({ token }) });
-    yandexTokenInput.value = "";
-    await loadYandexDocAvailability();
+    await api("/api/yandex-cookies", { method: "PUT", body: JSON.stringify({ cookies }) });
+    yandexCookiesInput.value = "";
+    await loadYandexCookies();
+    refreshClients();
   } catch (err) {
-    yandexTokenError.textContent = "Не удалось сохранить: " + err.message;
+    yandexCookiesError.textContent = "Не сохранено: " + err.message;
   } finally {
     e.target.disabled = false;
   }
 });
 
-$("yandex-token-clear").addEventListener("click", async (e) => {
-  yandexTokenError.textContent = "";
-  if (!confirm("Отключить генерацию документов и удалить сохранённый токен?")) return;
+$("yandex-cookies-clear").addEventListener("click", async (e) => {
+  yandexCookiesError.textContent = "";
+  if (!confirm("Убрать вход в Яндекс с сервера? Каналы перезапустятся.")) return;
   e.target.disabled = true;
   try {
-    await api("/api/yandex-token", { method: "DELETE" });
-    await loadYandexDocAvailability();
+    await api("/api/yandex-cookies", { method: "DELETE" });
+    await loadYandexCookies();
   } catch (err) {
-    yandexTokenError.textContent = "Не удалось отключить: " + err.message;
+    yandexCookiesError.textContent = "Не удалось: " + err.message;
   } finally {
     e.target.disabled = false;
   }
@@ -179,13 +173,6 @@ function addTransportRow(t) {
   url.type = "text";
   url.value = (t && t.url) || "";
 
-  const gen = document.createElement("button");
-  gen.type = "button";
-  gen.className = "ghost small";
-  gen.textContent = "Создать";
-  gen.title = "Создать документ на Яндекс Диске";
-  gen.addEventListener("click", () => generateDoc(url, gen));
-
   const del = document.createElement("button");
   del.type = "button";
   del.className = "ghost small";
@@ -201,37 +188,17 @@ function addTransportRow(t) {
     row.dataset.type = select.value;
     updateRow(row);
   });
-  row.append(select, url, gen, del);
+  row.append(select, url, del);
   transportsBox.appendChild(row);
   updateRow(row);
 }
 
-// updateRow shows the URL field and the "create" button the type needs.
+// updateRow shows the URL field the type needs.
 function updateRow(row) {
-  const [select, url, gen] = row.children;
+  const [select, url] = row.children;
   const type = select.value;
-  const ownRooms = MAKES_OWN_ROOMS.has(type);
-  url.style.display = ownRooms ? "none" : "";
+  url.style.display = MAKES_OWN_ROOMS.has(type) ? "none" : "";
   url.placeholder = URL_PLACEHOLDERS[type] || "ссылка";
-  // A .docx uploaded through the Disk API always opens in the Volga editor,
-  // which only the vyandex transport speaks.
-  gen.style.display = yandexDocAvailable && type === "vyandex" ? "" : "none";
-}
-
-async function generateDoc(urlInput, btn) {
-  generateError.textContent = "";
-  btn.disabled = true;
-  const original = btn.textContent;
-  btn.textContent = "…";
-  try {
-    const { url } = await api("/api/yandex-doc", { method: "POST", body: JSON.stringify({ name: nameInput.value }) });
-    urlInput.value = url;
-  } catch (err) {
-    generateError.textContent = "Не удалось создать документ: " + err.message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = original;
-  }
 }
 
 $("f-add-transport").addEventListener("click", () => addTransportRow(null));
@@ -239,7 +206,6 @@ $("f-add-transport").addEventListener("click", () => addTransportRow(null));
 function openModal(status) {
   addForm.reset();
   addError.textContent = "";
-  generateError.textContent = "";
   transportsBox.innerHTML = "";
   if (status) {
     const cfg = status.config;

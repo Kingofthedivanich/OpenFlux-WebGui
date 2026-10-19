@@ -10,8 +10,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/p1neappleXpress/OpenFlux/yandexdisk"
 )
 
 // TransportEntry is one carrier of a client's channel.
@@ -89,6 +87,9 @@ func (c ClientConfig) Validate() error {
 		if !confSafe(t.URL) {
 			return fmt.Errorf("transport %d (%s): url must be one line without '#' or ';' (a .conf value ends there)", i+1, t.Type)
 		}
+		if t.Type == "vyandex" && !volgaDocURL.MatchString(t.URL) {
+			return fmt.Errorf("transport %d (vyandex): need the address of the document open in Yandex Docs, https://docs.yandex.ru/edit/d/…; a Disk share link (/i/, /d/, yadi.sk) opens a preview without an editor", i+1)
+		}
 	}
 	switch c.Mode {
 	case "", "l4", "l3":
@@ -147,17 +148,30 @@ func carrierNames(ts []TransportEntry) []string {
 	return names
 }
 
-// normalize fixes links a channel can be given but its core cannot use, and
-// reports whether it changed any: a vyandex document given as its Disk
-// public link (disk.yandex.ru/d/..., the preview page) becomes the editor
-// link the transport needs (disk.yandex.ru/edit/d/...).
+// volgaDoc is a Yandex Docs document as its editor shows it in the address
+// bar. The id is Docs' own; a Disk share link (/i/, /d/, yadi.sk) opens a
+// preview page without an editor, and no editor link can be made from it.
+var volgaDoc = regexp.MustCompile(`^https://(?:docs|disk)\.yandex\.(?:ru|com|by|kz|uz)/edit/d/([A-Za-z0-9_-]{16,200})/?(?:[?#].*)?$`)
+
+// volgaDocURL is the one form of a vyandex link a channel runs with.
+var volgaDocURL = regexp.MustCompile(`^https://docs\.yandex\.ru/edit/d/[A-Za-z0-9_-]{16,200}$`)
+
+// normalize brings links to the form a channel's core needs, and reports
+// whether it changed any. A vyandex document drops what the browser added
+// after the id (?source=..&sk=.., the browser session's own key, which would
+// otherwise go out in every link) and moves to docs.yandex.ru: the core
+// loads a Yandex sign-in (--yandex-cookies-file) for yandex.ru only.
 func (c *ClientConfig) normalize() bool {
 	changed := false
 	for i, t := range c.Transports {
 		if t.Type != "vyandex" {
 			continue
 		}
-		if u := yandexdisk.EditURL(t.URL); u != t.URL {
+		m := volgaDoc.FindStringSubmatch(strings.TrimSpace(t.URL))
+		if m == nil {
+			continue
+		}
+		if u := "https://docs.yandex.ru/edit/d/" + m[1]; u != t.URL {
 			c.Transports[i].URL = u
 			changed = true
 		}

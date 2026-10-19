@@ -32,7 +32,7 @@ PANEL_USER=""
 PANEL_PASS=""
 PANEL_DATA="$SCRIPT_DIR/openflux-panel"
 SHARE_HOST=""
-YANDEX_TOKEN_FILE=""
+YANDEX_TOKEN_FILE="" # gone: Disk documents cannot carry vyandex; kept so old configs load
 # The bot's token lives in a root-only file, passed as --telegram-bot-token-file,
 # so it is in neither the unit nor the process list.
 TELEGRAM_TOKEN_FILE="$SCRIPT_DIR/telegram.token"
@@ -112,7 +112,6 @@ PANEL_USER=$(printf '%q' "$PANEL_USER")
 PANEL_PASS=$(printf '%q' "$PANEL_PASS")
 PANEL_DATA=$(printf '%q' "$PANEL_DATA")
 SHARE_HOST=$(printf '%q' "$SHARE_HOST")
-YANDEX_TOKEN_FILE=$(printf '%q' "$YANDEX_TOKEN_FILE")
 TELEGRAM_TOKEN_FILE=$(printf '%q' "$TELEGRAM_TOKEN_FILE")
 TELEGRAM_ADMIN_IDS=$(printf '%q' "$TELEGRAM_ADMIN_IDS")
 EOF
@@ -162,7 +161,6 @@ first_time_setup() {
     while [ -z "$PANEL_PASS" ]; do PANEL_PASS="$(prompt_default "panel password (required)" "")"; done
     PANEL_DATA="$(prompt_default "clients directory (keys, channels)" "$PANEL_DATA")"
     SHARE_HOST="$(prompt_default "address clients dial for a direct port (empty: this host's public IPv4)" "$SHARE_HOST")"
-    YANDEX_TOKEN_FILE="$(prompt_default "Yandex OAuth token file (optional: lets the panel create vyandex documents; need not exist yet)" "$YANDEX_TOKEN_FILE")"
     save_config
     echo "Saved to $CONFIG_FILE. Applying..."
     apply_override
@@ -199,7 +197,6 @@ apply_override() {
     exec_start="$exec_start $(sdarg --panel-pass "$PANEL_PASS")"
     exec_start="$exec_start $(sdarg --panel-data "$PANEL_DATA")"
     [ -n "$SHARE_HOST" ] && exec_start="$exec_start $(sdarg --share-host "$SHARE_HOST")"
-    [ -n "$YANDEX_TOKEN_FILE" ] && exec_start="$exec_start $(sdarg --yandex-token-file "$YANDEX_TOKEN_FILE")"
     if bot_enabled; then
         exec_start="$exec_start $(sdarg --telegram-bot-token-file "$TELEGRAM_TOKEN_FILE")"
         exec_start="$exec_start $(sdarg --telegram-admin-ids "$TELEGRAM_ADMIN_IDS")"
@@ -423,6 +420,46 @@ bot_disable() {
     apply_override
 }
 
+# ---------- Yandex sign-in ----------
+
+# yandex_cookies_load sends a cookies.txt (or a "Session_id=...; ..." line)
+# to the panel, which checks it, keeps it root-only and restarts every
+# channel with it. vyandex needs it: Yandex lets only a signed-in account
+# open a document's editor.
+yandex_cookies_load() {
+    echo "Use an account of its own: its session will sit on this server."
+    echo "Sign in on yandex.ru in a browser, export the cookies as cookies.txt"
+    echo "(an extension such as \"Get cookies.txt LOCALLY\"), copy the file here."
+    local file
+    read -rp "Path to cookies.txt on this server: " file
+    [ -f "$file" ] || { echo "no such file: $file"; return 1; }
+    panel_login || return 1
+    local resp code
+    resp="$(mktemp)"
+    code="$(jq -Rs '{cookies: .}' <"$file" | curl -s -o "$resp" -w '%{http_code}' -b "$COOKIE_JAR" -X PUT \
+        -H 'Content-Type: application/json' --data-binary @- "http://$PANEL_ADDR/api/yandex-cookies")"
+    if [ "$code" = "200" ]; then
+        echo "Saved; every channel restarts with the sign-in."
+        read -rp "Delete $file now (the panel keeps its own copy)? [Y/n] " del
+        [ "${del:-y}" = "n" ] || rm -f "$file"
+    else
+        echo "error ($code): $(jq -r '.error // .' <"$resp" 2>/dev/null || cat "$resp")" >&2
+    fi
+    rm -f "$resp"
+}
+
+yandex_cookies_clear() {
+    panel_login || return 1
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -X DELETE "http://$PANEL_ADDR/api/yandex-cookies")"
+    [ "$code" = "200" ] && echo "Removed; channels restart without it." || echo "error: HTTP $code" >&2
+}
+
+yandex_cookies_status() {
+    panel_login || return 1
+    panel_get /api/yandex-cookies | jq -r 'if .set then "Yandex sign-in: set (\(.set_at))" else "Yandex sign-in: not set" end'
+}
+
 bot_status() {
     if ! bot_enabled; then
         echo "Telegram bot: off."
@@ -455,6 +492,10 @@ menu() {
 10) Telegram bot: enable / change token or admins
 11) Telegram bot: disable
 12) Telegram bot: status
+----------------------------------------
+13) Yandex sign-in for vyandex: load cookies.txt
+14) Yandex sign-in: remove
+15) Yandex sign-in: status
  0) Exit
 ========================================
 EOF
@@ -474,6 +515,9 @@ EOF
         10) bot_configure ;;
         11) bot_disable ;;
         12) bot_status ;;
+        13) yandex_cookies_load ;;
+        14) yandex_cookies_clear ;;
+        15) yandex_cookies_status ;;
         0) exit 0 ;;
         *) echo "invalid choice" ;;
     esac

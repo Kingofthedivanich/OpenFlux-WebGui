@@ -11,13 +11,11 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
-	"os"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/p1neappleXpress/OpenFlux/exitmgr"
 	"github.com/p1neappleXpress/OpenFlux/share"
-	"github.com/p1neappleXpress/OpenFlux/yandexdisk"
 )
 
 //go:embed static
@@ -33,6 +31,9 @@ type Manager interface {
 	Add(cfg exitmgr.ClientConfig) error
 	Update(id string, cfg exitmgr.ClientConfig) error
 	Remove(id string) error
+	YandexCookies() (bool, time.Time)
+	SetYandexCookies(data []byte) error
+	ClearYandexCookies() error
 }
 
 // Server is the panel's HTTP handler. It does not own the listener.
@@ -42,31 +43,16 @@ type Server struct {
 	user     string
 	pass     string
 	mux      *http.ServeMux
-
-	// yandexTokenFile keeps the Yandex OAuth token pasted into the panel, so
-	// it survives a restart. Empty disables document generation entirely.
-	yandexTokenFile string
-	yandexMu        sync.RWMutex
-	yandexDisk      *yandexdisk.Client // nil until a token is set
 }
 
-// NewServer builds the panel's HTTP handler. yandexTokenFile, when set, lets
-// the panel create vyandex documents on a Yandex Disk account.
-func NewServer(mgr Manager, user, pass, yandexTokenFile string) *Server {
+// NewServer builds the panel's HTTP handler.
+func NewServer(mgr Manager, user, pass string) *Server {
 	s := &Server{
-		mgr:             mgr,
-		sessions:        newSessionStore(),
-		user:            user,
-		pass:            pass,
-		yandexTokenFile: yandexTokenFile,
-		mux:             http.NewServeMux(),
-	}
-	if yandexTokenFile != "" {
-		if data, err := os.ReadFile(yandexTokenFile); err == nil {
-			if token := strings.TrimSpace(string(data)); token != "" {
-				s.yandexDisk = yandexdisk.New(token)
-			}
-		}
+		mgr:      mgr,
+		sessions: newSessionStore(),
+		user:     user,
+		pass:     pass,
+		mux:      http.NewServeMux(),
 	}
 	s.routes()
 	return s
@@ -89,10 +75,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/clients/{id}/qr", s.requireAuth(s.handleClientQR))
 	s.mux.HandleFunc("GET /api/clients/{id}/logs", s.requireAuth(s.handleClientLogs))
 
-	s.mux.HandleFunc("GET /api/yandex-doc-available", s.requireAuth(s.handleYandexDocAvailable))
-	s.mux.HandleFunc("POST /api/yandex-doc", s.requireAuth(s.handleGenerateYandexDoc))
-	s.mux.HandleFunc("PUT /api/yandex-token", s.requireAuth(s.handleSetYandexToken))
-	s.mux.HandleFunc("DELETE /api/yandex-token", s.requireAuth(s.handleClearYandexToken))
+	s.mux.HandleFunc("GET /api/yandex-cookies", s.requireAuth(s.handleYandexCookies))
+	s.mux.HandleFunc("PUT /api/yandex-cookies", s.requireAuth(s.handleSetYandexCookies))
+	s.mux.HandleFunc("DELETE /api/yandex-cookies", s.requireAuth(s.handleClearYandexCookies))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {

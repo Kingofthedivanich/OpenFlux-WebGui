@@ -150,6 +150,9 @@ func (m *Manager) Add(cfg ClientConfig) error {
 	if err := m.portFree(cfg); err != nil {
 		return err
 	}
+	if err := portBindable(cfg.DirectPort); err != nil {
+		return err
+	}
 	cfg.Transports = append([]TransportEntry(nil), cfg.Transports...)
 	e := m.launch(cfg)
 	m.clients[cfg.ID] = e
@@ -184,6 +187,12 @@ func (m *Manager) Update(id string, cfg ClientConfig) error {
 	}
 	if err := m.portFree(cfg); err != nil {
 		return err
+	}
+	// The client's own channel holds its current port; only a new one is tried.
+	if cfg.DirectPort != old.cfg.DirectPort {
+		if err := portBindable(cfg.DirectPort); err != nil {
+			return err
+		}
 	}
 	if old.proc != nil {
 		old.proc.stop()
@@ -304,6 +313,9 @@ func (m *Manager) launch(cfg ClientConfig) *entry {
 		"--share",
 		"--ipc-socket", ch.socketPath(),
 	}, m.opts.ExtraArgs...)
+	if _, err := os.Stat(m.yandexCookiesPath()); err == nil {
+		argv = append(argv, "--yandex-cookies-file", m.yandexCookiesPath())
+	}
 	e := &entry{cfg: cfg}
 	// Off the proc's goroutine: Update and Remove hold m.mu while they wait
 	// for a proc to stop.

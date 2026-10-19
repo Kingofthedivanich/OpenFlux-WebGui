@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -205,19 +204,11 @@ func (m *stubManager) only(t *testing.T) exitmgr.ClientStatus {
 	return list[0]
 }
 
-type fakeDocs struct{ made int }
-
-func (d *fakeDocs) YandexDocAvailable() bool { return true }
-func (d *fakeDocs) CreateYandexDoc(ctx context.Context, name string) (string, error) {
-	d.made++
-	return "https://disk.yandex.ru/i/made-" + strconv.Itoa(d.made), nil
-}
-
-func newTestBot(t *testing.T, docs DocMaker) (*Bot, *fakeTelegram, *stubManager) {
+func newTestBot(t *testing.T) (*Bot, *fakeTelegram, *stubManager) {
 	t.Helper()
 	f := newFakeTelegram(t)
 	mgr := newStubManager()
-	b := New(testToken, []int64{adminID}, mgr, docs)
+	b := New(testToken, []int64{adminID}, mgr)
 	b.api.base = f.srv.URL
 	return b, f, mgr
 }
@@ -266,7 +257,7 @@ func TestRunLogsWithoutTheToken(t *testing.T) {
 		time.Sleep(500 * time.Millisecond) // past the client's timeout
 	}))
 	defer slow.Close()
-	b := New(testToken, []int64{adminID}, newStubManager(), nil)
+	b := New(testToken, []int64{adminID}, newStubManager())
 	b.api.base = slow.URL
 	b.api.client.Timeout = 100 * time.Millisecond
 
@@ -285,7 +276,7 @@ func TestRunLogsWithoutTheToken(t *testing.T) {
 // ---- commands ----
 
 func TestNonAdminIsIgnored(t *testing.T) {
-	b, f, _ := newTestBot(t, nil)
+	b, f, _ := newTestBot(t)
 	b.handleUpdate(msg(otherID, "/list"))
 	b.handleUpdate(press(otherID, "removeyes:x"))
 	if f.count() != 0 {
@@ -294,27 +285,26 @@ func TestNonAdminIsIgnored(t *testing.T) {
 }
 
 func TestAddWizardWithSeveralTransports(t *testing.T) {
-	docs := &fakeDocs{}
-	b, f, mgr := newTestBot(t, docs)
+	b, f, mgr := newTestBot(t)
 	b.handleUpdate(msg(adminID, "/add"))
 	b.handleUpdate(msg(adminID, "Alice"))
 	if !f.hasButton("w:t=vyandex") || !f.hasButton("w:t=cupsonline") {
 		t.Fatalf("no transport buttons: %+v", f.last())
 	}
 	b.handleUpdate(press(adminID, "w:t=vyandex"))
-	if !f.hasButton("w:gen") {
-		t.Fatal("no create-document button for vyandex with a token set")
+	if !strings.Contains(f.last().Text, "docs.yandex.ru/edit/d/") || f.hasButton("w:gen") {
+		t.Fatalf("vyandex prompt = %+v: want the editor address asked for, no create button", f.last())
 	}
-	b.handleUpdate(press(adminID, "w:gen"))
+	b.handleUpdate(msg(adminID, " https://docs.yandex.ru/edit/d/abcdefghijklmnopqrstuv "))
 	b.handleUpdate(press(adminID, "w:t=yandex"))
-	b.handleUpdate(msg(adminID, " https://disk.yandex.ru/i/typed "))
+	b.handleUpdate(msg(adminID, "https://disk.yandex.ru/i/typed"))
 	b.handleUpdate(press(adminID, "w:t=cupsonline"))
 	b.handleUpdate(press(adminID, "w:done"))
 	b.handleUpdate(msg(adminID, "7443"))
 
 	c := mgr.only(t)
 	want := []exitmgr.TransportEntry{
-		{Type: "vyandex", URL: "https://disk.yandex.ru/i/made-1"},
+		{Type: "vyandex", URL: "https://docs.yandex.ru/edit/d/abcdefghijklmnopqrstuv"},
 		{Type: "yandex", URL: "https://disk.yandex.ru/i/typed"},
 		{Type: "cupsonline"},
 	}
@@ -327,7 +317,7 @@ func TestAddWizardWithSeveralTransports(t *testing.T) {
 }
 
 func TestWizardRejectsBadPortAndTypedChoices(t *testing.T) {
-	b, f, mgr := newTestBot(t, nil)
+	b, f, mgr := newTestBot(t)
 	b.handleUpdate(msg(adminID, "/add"))
 	b.handleUpdate(msg(adminID, "Bob"))
 	b.handleUpdate(msg(adminID, "w:t=cupsonline")) // typed, not pressed: ignored
@@ -345,7 +335,7 @@ func TestWizardRejectsBadPortAndTypedChoices(t *testing.T) {
 }
 
 func TestEditKeepsWhatIsNotChanged(t *testing.T) {
-	b, f, mgr := newTestBot(t, nil)
+	b, f, mgr := newTestBot(t)
 	orig := exitmgr.ClientConfig{
 		ID: "abc", Name: "Carol", Mode: "l3", DirectPort: 5000, Context: "ctx",
 		Transports: []exitmgr.TransportEntry{{Type: "cupsonline", URL: "rooms-kept"}},
@@ -369,7 +359,7 @@ func TestEditKeepsWhatIsNotChanged(t *testing.T) {
 }
 
 func TestStatusSendsLinkAndQR(t *testing.T) {
-	b, f, mgr := newTestBot(t, nil)
+	b, f, mgr := newTestBot(t)
 	link, err := share.MakeLink(share.Config{Transports: []share.Transport{{Type: "yandex", URL: "https://disk.yandex.ru/i/x"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -397,7 +387,7 @@ func TestStatusSendsLinkAndQR(t *testing.T) {
 }
 
 func TestRemoveNeedsConfirmation(t *testing.T) {
-	b, f, mgr := newTestBot(t, nil)
+	b, f, mgr := newTestBot(t)
 	mgr.clients["abc"] = exitmgr.ClientStatus{Config: exitmgr.ClientConfig{ID: "abc"}}
 	b.handleUpdate(msg(adminID, "/remove abc"))
 	if _, ok := mgr.Get("abc"); !ok || !f.hasButton("removeyes:abc") {
@@ -410,7 +400,7 @@ func TestRemoveNeedsConfirmation(t *testing.T) {
 }
 
 func TestLogsKeepTheNewestLinesWithinALimit(t *testing.T) {
-	b, f, mgr := newTestBot(t, nil)
+	b, f, mgr := newTestBot(t)
 	mgr.clients["abc"] = exitmgr.ClientStatus{Config: exitmgr.ClientConfig{ID: "abc"}}
 	for i := 0; i < 100; i++ {
 		mgr.logs = append(mgr.logs, fmt.Sprintf("line %03d %s", i, strings.Repeat("x", 200)))

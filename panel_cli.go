@@ -46,7 +46,6 @@ func runExitPanel(args []string) int {
 	user := fs.String("panel-user", "", "Panel login (required)")
 	pass := fs.String("panel-pass", "", "Panel password (required)")
 	data := fs.String("panel-data", "openflux-panel", "Directory with the client list and every client's channel (keys, node.conf, cookies)")
-	yandexTokenFile := fs.String("yandex-token-file", "", "Optional: file the panel keeps a Yandex OAuth token (disk.write) in, to create vyandex documents itself")
 	shareHost := fs.String("share-host", "", "Address clients dial for a client's direct port. Default: this host's first public IPv4")
 	allowPrivate := fs.Bool("allow-private", false, "Let clients reach this host's loopback, private networks and cloud metadata (refused by default)")
 	debug := fs.Int("debug", 0, "Debug level passed to every channel's core (0-3)")
@@ -57,7 +56,10 @@ func runExitPanel(args []string) int {
 	// systemd unit written for it still starts this binary: deploy/update.sh
 	// swaps the binary before openflux-ctl rewrites the unit, and rolls back
 	// if the service does not come up.
-	legacy := map[string]*string{"panel-key-file": fs.String("panel-key-file", "", "Ignored: a flag of the old WebGui panel")}
+	legacy := map[string]*string{
+		"panel-key-file":    fs.String("panel-key-file", "", "Ignored: a flag of the old WebGui panel"),
+		"yandex-token-file": fs.String("yandex-token-file", "", "Ignored: documents uploaded to Yandex Disk cannot carry vyandex; set a Yandex sign-in in the panel instead"),
+	}
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "openflux --role=exit-panel --panel-user=U --panel-pass=P [options]\n\n")
 		fs.PrintDefaults()
@@ -127,7 +129,7 @@ func runExitPanel(args []string) int {
 	}
 	log.Printf("Exit panel: %d client(s) from %s", len(mgr.List()), *data)
 
-	web := panel.NewServer(mgr, *user, *pass, *yandexTokenFile)
+	web := panel.NewServer(mgr, *user, *pass)
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           web,
@@ -144,7 +146,7 @@ func runExitPanel(args []string) int {
 	botCtx, stopBot := context.WithCancel(context.Background())
 	defer stopBot()
 	if token != "" {
-		go telegrambot.New(token, admins, mgr, web).Run(botCtx)
+		go telegrambot.New(token, admins, mgr).Run(botCtx)
 	}
 
 	sigCh := make(chan os.Signal, 1)

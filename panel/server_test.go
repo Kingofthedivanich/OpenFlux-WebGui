@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/p1neappleXpress/OpenFlux/exitmgr"
 	"github.com/p1neappleXpress/OpenFlux/share"
@@ -19,6 +20,30 @@ type stubManager struct {
 	mu      sync.Mutex
 	clients map[string]exitmgr.ClientStatus
 	failAdd error
+	cookies []byte
+}
+
+func (m *stubManager) YandexCookies() (bool, time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cookies != nil, time.Unix(1700000000, 0)
+}
+
+func (m *stubManager) SetYandexCookies(data []byte) error {
+	if !strings.Contains(string(data), "Session_id") {
+		return fmt.Errorf("no Session_id cookie for yandex.ru")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cookies = data
+	return nil
+}
+
+func (m *stubManager) ClearYandexCookies() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cookies = nil
+	return nil
 }
 
 func newStubManager() *stubManager {
@@ -88,7 +113,7 @@ func (m *stubManager) Remove(id string) error {
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
-	return NewServer(newStubManager(), "admin", "s3cret", "")
+	return NewServer(newStubManager(), "admin", "s3cret")
 }
 
 func do(t *testing.T, srv *Server, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -153,14 +178,14 @@ func TestLogoutRevokesSession(t *testing.T) {
 
 func TestAddEditRemoveClient(t *testing.T) {
 	mgr := newStubManager()
-	srv := NewServer(mgr, "admin", "s3cret", "")
+	srv := NewServer(mgr, "admin", "s3cret")
 	cookie := login(t, srv, "admin", "s3cret")
 
 	w := do(t, srv, "POST", "/api/clients", map[string]any{
 		"id":   "../evil", // ignored: the panel picks the id
 		"name": "  Bob  ",
 		"transports": []map[string]string{
-			{"type": "vyandex", "url": " https://disk.yandex.ru/i/abc "},
+			{"type": "vyandex", "url": " https://docs.yandex.ru/edit/d/abcdefghijklmnopqr "},
 			{"type": "cupsonline"},
 		},
 		"direct_port": 41000,
@@ -175,7 +200,7 @@ func TestAddEditRemoveClient(t *testing.T) {
 	if !ok || id == "../evil" {
 		t.Fatalf("client %q not added with a panel id", id)
 	}
-	if st.Config.Name != "Bob" || st.Config.Transports[0].URL != "https://disk.yandex.ru/i/abc" || st.Config.DirectPort != 41000 {
+	if st.Config.Name != "Bob" || st.Config.Transports[0].URL != "https://docs.yandex.ru/edit/d/abcdefghijklmnopqr" || st.Config.DirectPort != 41000 {
 		t.Fatalf("config not trimmed/taken over: %+v", st.Config)
 	}
 
@@ -215,7 +240,7 @@ func TestAddRejectsInvalidConfig(t *testing.T) {
 
 func TestQRAndLogs(t *testing.T) {
 	mgr := newStubManager()
-	srv := NewServer(mgr, "admin", "s3cret", "")
+	srv := NewServer(mgr, "admin", "s3cret")
 	cookie := login(t, srv, "admin", "s3cret")
 
 	link, err := share.MakeLink(share.Config{Transports: []share.Transport{{Type: "yandex", URL: "https://disk.yandex.ru/i/abc"}}})
@@ -255,5 +280,29 @@ func TestTransportTypes(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &types)
 	if len(types) == 0 || types[0] != "vyandex" {
 		t.Fatalf("types = %v, want vyandex first", types)
+	}
+}
+
+func TestYandexCookies(t *testing.T) {
+	mgr := newStubManager()
+	srv := NewServer(mgr, "admin", "s3cret")
+	cookie := login(t, srv, "admin", "s3cret")
+
+	if w := do(t, srv, "PUT", "/api/yandex-cookies", map[string]string{"cookies": "x"}, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated set: %d", w.Code)
+	}
+	if w := do(t, srv, "PUT", "/api/yandex-cookies", map[string]string{"cookies": "yandexuid=1"}, cookie); w.Code != http.StatusBadRequest {
+		t.Fatalf("cookies without a session: %d", w.Code)
+	}
+	if w := do(t, srv, "PUT", "/api/yandex-cookies", map[string]string{"cookies": "Session_id=abc"}, cookie); w.Code != http.StatusOK {
+		t.Fatalf("set: %d %s", w.Code, w.Body)
+	}
+	w := do(t, srv, "GET", "/api/yandex-cookies", nil, cookie)
+	if !strings.Contains(w.Body.String(), `"set":true`) || strings.Contains(w.Body.String(), "abc") {
+		t.Fatalf("status = %s: want set, and never the cookies themselves", w.Body)
+	}
+	do(t, srv, "DELETE", "/api/yandex-cookies", nil, cookie)
+	if w := do(t, srv, "GET", "/api/yandex-cookies", nil, cookie); !strings.Contains(w.Body.String(), `"set":false`) {
+		t.Fatalf("after clear: %s", w.Body)
 	}
 }
