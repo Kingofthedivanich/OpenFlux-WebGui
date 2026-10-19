@@ -267,6 +267,11 @@ func main() {
 	}
 	fmt.Print("written by p1neappleXpress\n")
 
+	// The multi-client exit panel has its own flags (panel_cli.go).
+	if isExitPanel(os.Args[1:]) {
+		os.Exit(runExitPanel(os.Args[1:]))
+	}
+
 	role := flag.String("role", roleClient, "client | exit | bench-send | bench-sink")
 	inbound := flag.String("inbound", "", "tun | socks5 (client only; default: tun on macOS, socks5 elsewhere)")
 	transportType := flag.String("transport", "yandex", "Transport type (yandex, vyandex, oneme, cupsonline, mailru, telemost)")
@@ -359,6 +364,8 @@ ROLE
   -r, --role=exit         Run as exit node.
   -r, --role=bench-send   Benchmark: push --bench-bytes MB.
   -r, --role=bench-sink   Benchmark: receive from transport.
+  -r, --role=exit-panel   Many exit channels behind a web admin panel
+                          (openflux --role=exit-panel --help).
 
 TRANSPORT  (single-transport mode)
   -t, --transport=yandex       Yandex.Docs over WebSocket. (default)

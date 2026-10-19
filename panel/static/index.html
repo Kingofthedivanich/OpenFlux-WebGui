@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenFlux — панель управления</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="login-view" class="view">
+  <form id="login-form" class="login-card">
+    <h1>OpenFlux</h1>
+    <p class="subtitle">Панель управления exit-node</p>
+    <label>Логин
+      <input type="text" id="login-user" autocomplete="username" required />
+    </label>
+    <label>Пароль
+      <input type="password" id="login-pass" autocomplete="current-password" required />
+    </label>
+    <div id="login-error" class="error-text"></div>
+    <button type="submit" class="primary">Войти</button>
+  </form>
+</div>
+
+<div id="dashboard-view" class="view" style="display:none">
+  <header>
+    <h1>OpenFlux</h1>
+    <div class="header-actions">
+      <button id="add-client-btn" class="primary">+ Добавить клиента</button>
+      <button id="logout-btn" class="ghost">Выйти</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="yandex-token-card" class="panel-key-card" style="display:none">
+      <div class="panel-key-label">Yandex OAuth токен (для автосоздания документов Volga)</div>
+      <div id="yandex-token-status" class="hint-text"></div>
+      <div class="panel-key-row">
+        <input type="password" id="yandex-token-input" placeholder="Вставь токен, чтобы задать или заменить" autocomplete="off" />
+        <button type="button" id="yandex-token-save" class="ghost small">Сохранить</button>
+        <button type="button" id="yandex-token-clear" class="ghost small">Отключить</button>
+      </div>
+      <div id="yandex-token-error" class="error-text"></div>
+    </div>
+
+    <div id="clients-empty" class="empty-state" style="display:none">
+      Нет ни одного клиента. Добавь первого.
+    </div>
+    <div id="clients-list"></div>
+  </main>
+</div>
+
+<div id="add-modal" class="modal-overlay" style="display:none">
+  <form id="add-form" class="modal-card">
+    <h2 id="add-modal-title">Новый клиент</h2>
+
+    <label>Имя
+      <input type="text" id="f-name" required />
+    </label>
+
+    <div class="field-group">
+      <div class="panel-key-label">Транспорты</div>
+      <div id="f-transports"></div>
+      <button type="button" id="f-add-transport" class="ghost small">+ транспорт</button>
+      <div class="hint-text">
+        Несколько транспортов — один туннель: клиент держит их все и переключается
+        по приоритету (сверху вниз по типу), если один сервис заблокируют.
+        Cups.online и Avito создают комнаты сами — ссылка не нужна.
+      </div>
+      <div id="f-generate-error" class="error-text"></div>
+    </div>
+
+    <label>Прямое подключение, TCP-порт (необязательно)
+      <input type="number" id="f-direct-port" min="1" max="65535" placeholder="например 7443 — резерв, если все сервисы недоступны" />
+    </label>
+
+    <label>Режим выходной ноды
+      <select id="f-mode">
+        <option value="l4">l4 — gVisor, без root (по умолчанию)</option>
+        <option value="l3">l3 — raw sockets, нужен root/CAP_NET_RAW</option>
+      </select>
+    </label>
+
+    <div id="add-error" class="error-text"></div>
+
+    <div class="modal-actions">
+      <button type="button" id="add-cancel-btn" class="ghost">Отмена</button>
+      <button type="submit" id="add-submit-btn" class="primary">Добавить</button>
+    </div>
+  </form>
+</div>
+
+<div id="qr-modal" class="modal-overlay" style="display:none">
+  <div class="modal-card qr-card">
+    <h2 id="qr-modal-title">Подключение клиента</h2>
+    <p class="hint-text">Отсканируй в приложении OpenFlux или скопируй ссылку. В ней ключ шифрования — передавай только этому клиенту.</p>
+    <img id="qr-image" alt="QR-код клиента" />
+    <div class="panel-key-row">
+      <code id="qr-link"></code>
+      <button type="button" id="qr-copy-btn" class="ghost small">Копировать</button>
+    </div>
+    <div id="qr-error" class="error-text"></div>
+    <div class="modal-actions">
+      <button type="button" id="qr-close-btn" class="ghost">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div id="logs-modal" class="modal-overlay" style="display:none">
+  <div class="modal-card logs-card">
+    <h2 id="logs-modal-title">Логи</h2>
+    <pre id="logs-body"></pre>
+    <div class="modal-actions">
+      <button type="button" id="logs-refresh-btn" class="ghost">Обновить</button>
+      <button type="button" id="logs-close-btn" class="ghost">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
