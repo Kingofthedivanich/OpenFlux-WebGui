@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/p1neappleXpress/OpenFlux/netbind"
+	"github.com/p1neappleXpress/OpenFlux/netguard"
 	"github.com/p1neappleXpress/OpenFlux/socks5"
 	"github.com/p1neappleXpress/OpenFlux/streamproxy"
 	"github.com/p1neappleXpress/OpenFlux/transport"
@@ -322,6 +323,7 @@ func main() {
 			"Empty = no IPC server.")
 	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
 	upstreamProxy := flag.String("upstream-proxy", "", "Exit (l4): open TCP connections through this SOCKS5 proxy, e.g. 127.0.0.1:10808 or socks5://user:pass@host:port")
+	allowPrivate := flag.Bool("allow-private", false, "Exit: let clients reach this host's loopback, private and link-local networks and cloud metadata (refused by default)")
 	httpProxyAddr := flag.String("http-proxy", "", "Client: also serve an HTTP proxy (CONNECT and plain requests) on this address, through the same tunnel")
 	flag.StringVar(&localIP, "local-ip", "", "Egress IP for exit node (l3 mode only, scoped RST drop)")
 
@@ -416,6 +418,9 @@ MODE  (only with --role=exit)
                                WinDivert.dll + WinDivert64.sys beside the core.
   -m, --mode=l4                Stream proxy (TCP termination + re-dial).
   -l, --local-ip=<ip>          Egress IP for SNAT. Auto-detected.
+      --allow-private          Let clients reach this host's loopback,
+                               private/link-local networks and cloud
+                               metadata. Refused by default.
 
 TRANSPORT MODIFIERS
   -c, --codec=batched          zstd + coalescing. Default.
@@ -542,6 +547,9 @@ DEPRECATED (removed in v2)
 		// A node channel with .flux carriers keeps them current (node-install.sh writes it).
 		if v, ok := confValue(conf.Interface, "ScriptAutoUpdate"); ok && !setFlags["script-auto-update"] {
 			*scriptAutoUpdate = confBool(v, false)
+		}
+		if v, ok := confValue(conf.Interface, "AllowPrivate"); ok && !setFlags["allow-private"] {
+			*allowPrivate = confBool(v, false)
 		}
 		if v, ok := confValue(conf.Interface, "Sensitive"); ok && !setFlags["sensitive"] && !setFlags["sensetive"] {
 			*sensitive = confBool(v, *sensitive)
@@ -696,6 +704,11 @@ DEPRECATED (removed in v2)
 		if addr := tunnel.ExitUpstream(); addr != "" {
 			log.Printf("Exit TCP goes through SOCKS5 %s", addr)
 		}
+	}
+
+	netguard.SetAllowPrivate(*allowPrivate)
+	if *allowPrivate && *role == roleExit {
+		log.Printf("warning: --allow-private: clients may reach this host's private networks and cloud metadata")
 	}
 
 	if *codec != codecBatched && *codec != codecLegacy {

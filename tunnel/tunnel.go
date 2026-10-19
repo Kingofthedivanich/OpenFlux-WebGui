@@ -20,6 +20,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
+	"github.com/p1neappleXpress/OpenFlux/netguard"
 	"github.com/p1neappleXpress/OpenFlux/network"
 	"github.com/p1neappleXpress/OpenFlux/transport"
 	"github.com/p1neappleXpress/OpenFlux/tunnel/l3"
@@ -222,6 +223,11 @@ func (t *TCPTunnel) handleExitUDP(r *udp.ForwarderRequest) bool {
 		return true
 	}
 	id := r.ID()
+	if dst := net.IP(id.LocalAddress.AsSlice()); netguard.Blocked(dst) {
+		t.udpFlows.Add(-1)
+		utils.Debugf("[EXIT] UDP refused blocked destination %s (use --allow-private to permit)", dst)
+		return true
+	}
 	dest := net.JoinHostPort(id.LocalAddress.String(), fmt.Sprintf("%d", id.LocalPort))
 
 	var wq waiter.Queue
@@ -279,6 +285,11 @@ func (t *TCPTunnel) handleExitUDP(r *udp.ForwarderRequest) bool {
 
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
+	if dst := net.IP(id.LocalAddress.AsSlice()); netguard.Blocked(dst) {
+		utils.Debugf("[EXIT] refused blocked destination %s (use --allow-private to permit)", dst)
+		r.Complete(true)
+		return
+	}
 	dest := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
 
 	var wq waiter.Queue

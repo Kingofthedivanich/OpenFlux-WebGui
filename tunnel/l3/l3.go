@@ -2,9 +2,11 @@ package l3
 
 import (
 	"fmt"
+	"net"
 	"sync/atomic"
 	"time"
 
+	"github.com/p1neappleXpress/OpenFlux/netguard"
 	"github.com/p1neappleXpress/OpenFlux/network"
 	"github.com/p1neappleXpress/OpenFlux/transport"
 	"github.com/p1neappleXpress/OpenFlux/utils"
@@ -33,6 +35,7 @@ type L3Exit struct {
 	dropNoFlowKey    atomic.Uint64
 	dropNoConntrack  atomic.Uint64
 	dropNotForUs     atomic.Uint64
+	dropBlocked      atomic.Uint64
 	sendToNetErrors  atomic.Uint64
 	sendToClientErrs atomic.Uint64
 }
@@ -95,6 +98,15 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 			t.dropFragmented.Add(1)
 			return
 		}
+	}
+
+	// A client must not turn the exit into a proxy into the exit host's own
+	// loopback, private networks or cloud metadata (see package netguard).
+	if netguard.Blocked(net.IP(pkt[16:20])) {
+		t.dropBlocked.Add(1)
+		utils.Debugf("[L3] drop: blocked destination %d.%d.%d.%d (use --allow-private)",
+			pkt[16], pkt[17], pkt[18], pkt[19])
+		return
 	}
 
 	k, ok := extractFlowKey(pkt)
@@ -257,13 +269,14 @@ func (t *L3Exit) statsLoop() {
 		dropNoKey := t.dropNoFlowKey.Load()
 		dropNoCt := t.dropNoConntrack.Load()
 		dropNotUs := t.dropNotForUs.Load()
+		dropBlocked := t.dropBlocked.Load()
 
-		utils.Debugf("[L3-STATS] fromTr=%d(+%d) toNet=%d(+%d) | fromNet=%d(+%d) toCli=%d(+%d) | drops: bad=%d fragmented=%d notus=%d nokey=%d noct=%d | errs: toNet=%d toCli=%d",
+		utils.Debugf("[L3-STATS] fromTr=%d(+%d) toNet=%d(+%d) | fromNet=%d(+%d) toCli=%d(+%d) | drops: bad=%d fragmented=%d notus=%d blocked=%d nokey=%d noct=%d | errs: toNet=%d toCli=%d",
 			fromTr, fromTr-lastFromTr,
 			toNet, toNet-lastToNet,
 			fromNet, fromNet-lastFromNet,
 			toCli, toCli-lastToCli,
-			dropBad, dropFragmented, dropNotUs, dropNoKey, dropNoCt,
+			dropBad, dropFragmented, dropNotUs, dropBlocked, dropNoKey, dropNoCt,
 			t.sendToNetErrors.Load(), t.sendToClientErrs.Load())
 
 		lastFromTr, lastToNet = fromTr, toNet
