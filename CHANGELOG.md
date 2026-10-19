@@ -5,6 +5,40 @@ All notable changes to the OpenFlux core. Format loosely follows
 
 ## [Unreleased]
 
+## [0.13.0-wg.1] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
+
+The WebGui fork rebuilt on p1neappleXpress/OpenFlux 0.13.0: upstream's
+protocol, transports and AES-GCM encryption, so upstream's apps connect to
+it, plus the fork's server side.
+
+### Added
+
+- **Exit panel** (`--role=exit-panel`, [docs/exit-panel.md](docs/exit-panel.md)):
+  many clients on one host behind a login-gated web UI. Each client is a
+  channel of its own (node.conf, generated key, cookies) run by its own
+  `openflux --config --share` process; several transports per client with
+  failover by priority, an optional direct port, the `openflux://` link and
+  QR code, logs, status from the core's IPC, Yandex Volga documents created
+  through Yandex Disk. Keys, context and the rooms a cups/avito exit made
+  survive edits and restarts.
+- **SSRF guard on the exit**: no connections (l4) or forwarded packets (l3)
+  to the host's loopback, private and link-local ranges or cloud metadata;
+  `--allow-private` / `AllowPrivate = yes` lifts it.
+- `deploy/menu.sh` (`openflux-ctl`) and `deploy/update.sh` for a panel
+  deployment under systemd; the updater checks `SHA256SUMS.txt`.
+
+### Changed
+
+- A panel from the old fork does not carry over: its Noise keys and client
+  list are not read, and its `--panel-key-file` / `--telegram-*` flags are
+  gone. Add the clients again and hand out the new links.
+
+### Removed
+
+- The fork's Noise NKpsk0 encryption, multistream and its own QR format
+  (upstream's AES-GCM, same-type carrier groups and `openflux://` links
+  replace them), and the nightly prerelease workflow.
+
 ## [0.13.0] / node-v1.6.0 - 2026-10-16
 
 node-install.sh installs **node-v1.6.0** from **p1neappleXpress/OpenFlux**.
