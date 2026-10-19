@@ -442,16 +442,14 @@ function renderClient(c) {
   info.appendChild(el("div", "client-stats", line));
 
   if (c.check) {
-    const check = el("div", "client-error", `${c.check.transport}: нужна проверка/вход (${c.check.reason || "captcha"})`);
-    if (c.check.url) {
-      check.append(" ");
-      const a = el("a", "", "открыть");
-      a.href = c.check.url;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      check.appendChild(a);
-    }
-    info.appendChild(check);
+    // The check belongs to the server's address and session: it opens for
+    // nobody else, and cookies from another browser would not reach the
+    // channel. The app passes it through the tunnel, over a carrier that works.
+    const how = cfg.direct_port
+      ? "пройди её в приложении OpenFlux: оно подключится через прямой порт и покажет проверку"
+      : "дай клиенту прямой порт: приложение проходит проверку через туннель, по работающему каналу";
+    info.appendChild(el("div", "client-error",
+      `${c.check.transport}: Яндекс просит у сервера проверку (${c.check.reason || "captcha"}) — ${how}`));
   }
   if (c.error) info.appendChild(el("div", "client-error", c.error));
   card.appendChild(info);

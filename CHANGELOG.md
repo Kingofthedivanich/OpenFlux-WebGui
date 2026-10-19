@@ -5,6 +5,16 @@ All notable changes to the OpenFlux core. Format loosely follows
 
 ## [Unreleased]
 
+## [0.13.0-wg.6] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
+
+### Fixed
+
+- The panel offered to open a captcha Yandex asks the server for. That page
+  opens only from the server's address and session ("access denied" in the
+  operator's browser), and cookies from another browser would not reach the
+  channel anyway. The panel and the bot now say to pass it in the OpenFlux
+  app, over the client's direct port (or to add one).
+
 ## [0.13.0-wg.5] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
 
 ### Fixed

@@ -314,7 +314,13 @@ func formatStatus(c exitmgr.ClientStatus) string {
 		fmt.Fprintf(&sb, "Перезапусков: %d\n", c.Restarts)
 	}
 	if c.Check != nil {
-		fmt.Fprintf(&sb, "⚠️ %s ждёт проверку/вход (%s) %s\n", c.Check.Transport, c.Check.Reason, c.Check.URL)
+		// The check opens only from the server's address and session, so
+		// its URL is no use here: the app passes it through the tunnel.
+		how := "дай клиенту прямой порт: приложение проходит проверку через туннель, по работающему каналу"
+		if c.Config.DirectPort > 0 {
+			how = "пройди её в приложении OpenFlux: оно подключится через прямой порт и покажет проверку"
+		}
+		fmt.Fprintf(&sb, "⚠️ %s: Яндекс просит у сервера проверку (%s) — %s\n", c.Check.Transport, c.Check.Reason, how)
 	}
 	if c.Error != "" {
 		fmt.Fprintf(&sb, "Ошибка: %s\n", c.Error)
