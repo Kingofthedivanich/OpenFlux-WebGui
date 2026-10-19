@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,14 @@ func runExitPanel(args []string) int {
 	shareHost := fs.String("share-host", "", "Address clients dial for a client's direct port. Default: this host's first public IPv4")
 	allowPrivate := fs.Bool("allow-private", false, "Let clients reach this host's loopback, private networks and cloud metadata (refused by default)")
 	debug := fs.Int("debug", 0, "Debug level passed to every channel's core (0-3)")
+	// The old WebGui panel's flags, accepted and ignored so a systemd unit
+	// written for it still starts this binary: deploy/update.sh swaps the
+	// binary before openflux-ctl rewrites the unit, and rolls back if the
+	// service does not come up.
+	legacy := map[string]*string{}
+	for _, name := range []string{"panel-key-file", "telegram-bot-token", "telegram-admin-ids"} {
+		legacy[name] = fs.String(name, "", "Ignored: a flag of the old WebGui panel")
+	}
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "openflux --role=exit-panel --panel-user=U --panel-pass=P [options]\n\n")
 		fs.PrintDefaults()
@@ -61,6 +70,19 @@ func runExitPanel(args []string) int {
 	if *user == "" || *pass == "" {
 		log.Printf("--role=exit-panel requires --panel-user and --panel-pass")
 		return 2
+	}
+	for name, v := range legacy {
+		if *v != "" {
+			log.Printf("warning: --%s is a flag of the old panel and is ignored; run openflux-ctl (Reconfigure) to rewrite the unit", name)
+		}
+	}
+	// The old panel kept its clients in a JSON file (openflux-clients.json);
+	// this one needs a directory. Use one beside that file: the old clients
+	// are not carried over (their Noise keys do not apply here).
+	if st, err := os.Stat(*data); err == nil && !st.IsDir() {
+		dir := filepath.Join(filepath.Dir(*data), "openflux-panel")
+		log.Printf("warning: --panel-data=%s is the old panel's client file; using %s instead (old clients are not carried over: add them again)", *data, dir)
+		*data = dir
 	}
 
 	var extra []string

@@ -5,6 +5,20 @@ All notable changes to the OpenFlux core. Format loosely follows
 
 ## [Unreleased]
 
+## [0.13.0-wg.2] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
+
+### Fixed
+
+- **Upgrading a server that runs the old WebGui panel.** `deploy/update.sh`
+  swaps the binary while the systemd unit still has the old panel's flags,
+  and rolls back when the service does not come up: the new binary refused
+  them, so the update could never land. The exit panel now accepts and
+  ignores `--panel-key-file`, `--telegram-bot-token` and
+  `--telegram-admin-ids` (with a warning), and a `--panel-data` that is the
+  old client file (`openflux-clients.json`) becomes an `openflux-panel`
+  directory beside it. `openflux-ctl` makes the same switch in its saved
+  settings, so Reconfigure writes a clean unit.
+
 ## [0.13.0-wg.1] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
 
 The WebGui fork rebuilt on p1neappleXpress/OpenFlux 0.13.0: upstream's

@@ -70,6 +70,19 @@ strip_quotes() {
 load_config() {
     # shellcheck source=/dev/null
     [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+    fix_legacy_panel_data
+}
+
+# The old panel kept its clients in a file (openflux-clients.json); this one
+# needs a directory. Point at one beside the old file; the old clients are
+# not carried over (their Noise keys do not apply to this core).
+fix_legacy_panel_data() {
+    case "$PANEL_DATA" in
+        *.json)
+            PANEL_DATA="$(dirname "$PANEL_DATA")/openflux-panel"
+            echo "note: the clients path pointed at the old panel's JSON file; using $PANEL_DATA" >&2
+            ;;
+    esac
 }
 
 save_config() {
@@ -102,6 +115,7 @@ detect_from_override() {
     val="$(grep -oP '(?<=--panel-data=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_DATA="$(strip_quotes "$val")"
     val="$(grep -oP '(?<=--share-host=)\S+' <<<"$line" || true)"; [ -n "$val" ] && SHARE_HOST="$(strip_quotes "$val")"
     val="$(grep -oP '(?<=--yandex-token-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && YANDEX_TOKEN_FILE="$(strip_quotes "$val")"
+    fix_legacy_panel_data
     return 0
 }
 
