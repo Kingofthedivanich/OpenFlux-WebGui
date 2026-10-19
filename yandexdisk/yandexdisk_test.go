@@ -233,6 +233,8 @@ func TestEditURL(t *testing.T) {
 		"https://disk.yandex.ru/edit/d/4wYUcwmQ13o": "https://disk.yandex.ru/edit/d/4wYUcwmQ13o",
 		"https://docs.yandex.ru/edit/d/xyz":         "https://docs.yandex.ru/edit/d/xyz",
 		"https://disk.yandex.ru/i/abc":              "https://disk.yandex.ru/i/abc",
+		"https://yadi.sk/d/gOBW-OE8UDTSkw":          "https://disk.yandex.ru/edit/d/gOBW-OE8UDTSkw",
+		"http://yadi.sk/d/gOBW-OE8UDTSkw/":          "https://disk.yandex.ru/edit/d/gOBW-OE8UDTSkw",
 		"https://evil.example/d/abc":                "https://evil.example/d/abc",
 	} {
 		if got := EditURL(in); got != want {

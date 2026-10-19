@@ -55,20 +55,26 @@ func NewWithBase(token, base string) *Client {
 	}
 }
 
-// publicPage is a Disk public link to a file's preview page.
-var publicPage = regexp.MustCompile(`^https://disk\.yandex\.(ru|com|by|kz|uz)/d/([A-Za-z0-9_-]+)/?$`)
+// publicPage is a Disk public link to a file's preview page: on a
+// disk.yandex.<tld> host, or the yadi.sk short host the API hands out for
+// some accounts.
+var publicPage = regexp.MustCompile(`^https?://(disk\.yandex\.(?:ru|com|by|kz|uz)|yadi\.sk)/d/([A-Za-z0-9_-]+)/?$`)
 
-// EditURL turns a Disk public link (disk.yandex.ru/d/<id>, what the API
-// returns as public_url) into the link of the same file in the online editor
-// (disk.yandex.ru/edit/d/<id>). The vyandex transport needs the editor: the
-// preview page has no editor config, and the transport fails with
-// "client-config not found". Any other link comes back unchanged.
+// EditURL turns a Disk public link (disk.yandex.ru/d/<id> or yadi.sk/d/<id>,
+// what the API returns as public_url) into the link of the same file in the
+// online editor (disk.yandex.ru/edit/d/<id>). The vyandex transport needs the
+// editor: the preview page has no editor config, and the transport fails
+// with "client-config not found". Any other link comes back unchanged.
 func EditURL(link string) string {
 	m := publicPage.FindStringSubmatch(strings.TrimSpace(link))
 	if m == nil {
 		return link
 	}
-	return "https://disk.yandex." + m[1] + "/edit/d/" + m[2]
+	host := m[1]
+	if host == "yadi.sk" {
+		host = "disk.yandex.ru"
+	}
+	return "https://" + host + "/edit/d/" + m[2]
 }
 
 // CreateDoc uploads a blank .docx named after name to the account's Disk,

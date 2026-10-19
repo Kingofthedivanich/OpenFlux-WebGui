@@ -5,6 +5,14 @@ All notable changes to the OpenFlux core. Format loosely follows
 
 ## [Unreleased]
 
+## [0.13.0-wg.5] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
+
+### Fixed
+
+- The 0.13.0-wg.4 fix missed the short Disk host: for some accounts the API's
+  `public_url` is `yadi.sk/d/<id>`, which still reached vyandex as the preview
+  page ("client-config not found"). It now becomes the editor link too.
+
 ## [0.13.0-wg.4] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
 
 ### Fixed

@@ -324,7 +324,7 @@ func TestVolgaPublicLinkBecomesEditorLink(t *testing.T) {
 		t.Fatalf("fix not saved: %+v\n%s", back, conf)
 	}
 
-	if err := m.Add(ClientConfig{ID: "new", Transports: []TransportEntry{{Type: "vyandex", URL: "https://disk.yandex.ru/d/abcdefgh"}}}); err != nil {
+	if err := m.Add(ClientConfig{ID: "new", Transports: []TransportEntry{{Type: "vyandex", URL: "https://yadi.sk/d/abcdefgh"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if s, _ := m.Get("new"); s.Config.Transports[0].URL != "https://disk.yandex.ru/edit/d/abcdefgh" {
