@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/p1neappleXpress/OpenFlux/netguard"
 )
@@ -44,6 +45,18 @@ func TestExitRefusesBlockedDestination(t *testing.T) {
 	client := NewTCPTunnelMode(a, false, ExitModeL4)
 	defer client.Close()
 
+	// Cloud metadata, the classic SSRF target: refused at once with a RST.
+	start := time.Now()
+	if conn, err := client.DialTCP("169.254.169.254:80"); err == nil {
+		conn.Close()
+		t.Fatal("dial to cloud metadata through the exit succeeded; want it refused")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("refusal took %v; want an immediate reset", d)
+	}
+
+	// Loopback: refused too. gVisor sends no reset from a loopback source on
+	// the tunnel NIC, so this one ends in the client's dial timeout.
 	if conn, err := client.DialTCP(echo.Addr().String()); err == nil {
 		conn.Close()
 		t.Fatalf("dial %s through the exit succeeded; want it refused", echo.Addr())

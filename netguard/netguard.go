@@ -21,17 +21,17 @@ func AllowPrivate() bool { return allowPrivate.Load() }
 
 // blocked4 lists the IPv4 ranges refused unless --allow-private is set.
 var blocked4 = mustCIDRs(
-	"0.0.0.0/8",       // "this host"
-	"10.0.0.0/8",      // RFC 1918
-	"100.64.0.0/10",   // CGNAT
-	"127.0.0.0/8",     // loopback
-	"169.254.0.0/16",  // link-local incl. 169.254.169.254 cloud metadata
-	"172.16.0.0/12",   // RFC 1918
-	"192.168.0.0/16",  // RFC 1918
-	"192.0.0.0/24",    // IETF protocol assignments
-	"198.18.0.0/15",   // benchmarking
-	"224.0.0.0/4",     // multicast
-	"240.0.0.0/4",     // reserved / 255.255.255.255 broadcast
+	"0.0.0.0/8",      // "this host"
+	"10.0.0.0/8",     // RFC 1918
+	"100.64.0.0/10",  // CGNAT
+	"127.0.0.0/8",    // loopback
+	"169.254.0.0/16", // link-local incl. 169.254.169.254 cloud metadata
+	"172.16.0.0/12",  // RFC 1918
+	"192.168.0.0/16", // RFC 1918
+	"192.0.0.0/24",   // IETF protocol assignments
+	"198.18.0.0/15",  // benchmarking
+	"224.0.0.0/4",    // multicast
+	"240.0.0.0/4",    // reserved / 255.255.255.255 broadcast
 )
 
 var blocked6 = mustCIDRs(
