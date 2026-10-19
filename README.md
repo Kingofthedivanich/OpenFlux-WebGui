@@ -2,6 +2,8 @@
 
 **English** | [Русский](README.ru.md)
 
+> **This fork** ([Kingofthedivanich/OpenFlux-WebGui](https://github.com/Kingofthedivanich/OpenFlux-WebGui)) adds a multi-client exit panel with a web UI and an SSRF guard on the exit: see [docs/exit-panel.md](docs/exit-panel.md).
+
 Network stack research tool. IPv4 TCP/UDP tunnel with pluggable transports
 (including a signed JS scripting engine for writing new ones), a batched +
 zstd codec, and two exit-node backends (L3 raw forward / L4 gVisor proxy).
