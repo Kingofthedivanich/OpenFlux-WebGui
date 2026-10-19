@@ -143,7 +143,6 @@ first_time_setup() {
     save_config
     echo "Saved to $CONFIG_FILE. Applying..."
     apply_override
-    pause
 }
 
 # ---------- systemd override ----------
@@ -407,5 +406,6 @@ ensure_jq
 load_config
 if [ -z "$PANEL_USER" ] || [ -z "$PANEL_PASS" ]; then
     first_time_setup
+    pause # from the menu, menu() pauses after it
 fi
 while true; do menu; done
