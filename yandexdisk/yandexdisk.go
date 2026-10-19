@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -54,9 +55,26 @@ func NewWithBase(token, base string) *Client {
 	}
 }
 
+// publicPage is a Disk public link to a file's preview page.
+var publicPage = regexp.MustCompile(`^https://disk\.yandex\.(ru|com|by|kz|uz)/d/([A-Za-z0-9_-]+)/?$`)
+
+// EditURL turns a Disk public link (disk.yandex.ru/d/<id>, what the API
+// returns as public_url) into the link of the same file in the online editor
+// (disk.yandex.ru/edit/d/<id>). The vyandex transport needs the editor: the
+// preview page has no editor config, and the transport fails with
+// "client-config not found". Any other link comes back unchanged.
+func EditURL(link string) string {
+	m := publicPage.FindStringSubmatch(strings.TrimSpace(link))
+	if m == nil {
+		return link
+	}
+	return "https://disk.yandex." + m[1] + "/edit/d/" + m[2]
+}
+
 // CreateDoc uploads a blank .docx named after name to the account's Disk,
-// publishes it, and returns its public share URL -- the same
-// disk.yandex.ru/i/... format transport/yandex expects as --url.
+// publishes it with write access for anyone with the link, and returns the
+// link of the file in the online editor -- what the vyandex transport takes
+// as its URL.
 func (c *Client) CreateDoc(ctx context.Context, name string) (string, error) {
 	if c.token == "" {
 		return "", fmt.Errorf("yandex disk: no OAuth token configured")
@@ -82,7 +100,7 @@ func (c *Client) CreateDoc(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read public url: %w", err)
 	}
-	return publicURL, nil
+	return EditURL(publicURL), nil
 }
 
 // ---- Disk REST API calls ----

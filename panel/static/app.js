@@ -43,7 +43,7 @@ const TRANSPORT_LABELS = {
 };
 const MAKES_OWN_ROOMS = new Set(["cupsonline", "avito"]);
 const URL_PLACEHOLDERS = {
-  vyandex: "https://disk.yandex.ru/i/...",
+  vyandex: "https://disk.yandex.ru/edit/d/...",
   yandex: "https://disk.yandex.ru/i/...",
   mailru: "https://cloud.mail.ru/public/...",
   telemost: "https://telemost.yandex.ru/j/...",

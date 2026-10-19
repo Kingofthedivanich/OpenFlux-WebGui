@@ -41,7 +41,7 @@ func newFakeDisk(t *testing.T) *fakeDisk {
 			w.WriteHeader(http.StatusCreated)
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"public_url": "https://disk.yandex.ru/i/testXYZ"})
+			json.NewEncoder(w).Encode(map[string]string{"public_url": "https://disk.yandex.ru/d/testXYZ"})
 		}
 	})
 	mux.HandleFunc("/resources/upload", func(w http.ResponseWriter, r *http.Request) {
@@ -89,8 +89,9 @@ func TestCreateDocHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDoc: %v", err)
 	}
-	if url != "https://disk.yandex.ru/i/testXYZ" {
-		t.Fatalf("url = %q", url)
+	// The API's public_url is the preview page; vyandex needs the editor.
+	if url != "https://disk.yandex.ru/edit/d/testXYZ" {
+		t.Fatalf("url = %q, want the editor link", url)
 	}
 	if f.folderPUTs != 1 {
 		t.Fatalf("folderPUTs = %d, want 1", f.folderPUTs)
@@ -222,5 +223,20 @@ func TestBlankDocxIsAValidZipWithNoPathTraversal(t *testing.T) {
 	}
 	if len(zr.File) != 3 {
 		t.Fatalf("got %d files, want 3", len(zr.File))
+	}
+}
+
+func TestEditURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://disk.yandex.ru/d/4wYUcwmQ13opeQ":   "https://disk.yandex.ru/edit/d/4wYUcwmQ13opeQ",
+		" https://disk.yandex.com/d/ab_c-1/ ":       "https://disk.yandex.com/edit/d/ab_c-1",
+		"https://disk.yandex.ru/edit/d/4wYUcwmQ13o": "https://disk.yandex.ru/edit/d/4wYUcwmQ13o",
+		"https://docs.yandex.ru/edit/d/xyz":         "https://docs.yandex.ru/edit/d/xyz",
+		"https://disk.yandex.ru/i/abc":              "https://disk.yandex.ru/i/abc",
+		"https://evil.example/d/abc":                "https://evil.example/d/abc",
+	} {
+		if got := EditURL(in); got != want {
+			t.Errorf("EditURL(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

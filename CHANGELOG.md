@@ -5,6 +5,22 @@ All notable changes to the OpenFlux core. Format loosely follows
 
 ## [Unreleased]
 
+## [0.13.0-wg.4] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
+
+### Fixed
+
+- **vyandex never came up on a document the panel created**: "client-config
+  not found". The Disk API's `public_url` is now the file's preview page
+  (`disk.yandex.ru/d/<id>`), which has no editor; the vyandex transport needs
+  the editor (`disk.yandex.ru/edit/d/<id>`). Created documents get the editor
+  link, and a channel given a `/d/` link for vyandex (saved, added or edited)
+  is switched to it; the encryption context stays, so only the link changes.
+
+### Changed
+
+- The panel and the bot recommend a direct port: when Yandex asks the server
+  for a captcha, the app can pass it only over a carrier that already works.
+
 ## [0.13.0-wg.3] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
 
 ### Added

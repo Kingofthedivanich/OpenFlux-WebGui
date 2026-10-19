@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/p1neappleXpress/OpenFlux/yandexdisk"
 )
 
 // TransportEntry is one carrier of a client's channel.
@@ -143,6 +145,24 @@ func carrierNames(ts []TransportEntry) []string {
 		}
 	}
 	return names
+}
+
+// normalize fixes links a channel can be given but its core cannot use, and
+// reports whether it changed any: a vyandex document given as its Disk
+// public link (disk.yandex.ru/d/..., the preview page) becomes the editor
+// link the transport needs (disk.yandex.ru/edit/d/...).
+func (c *ClientConfig) normalize() bool {
+	changed := false
+	for i, t := range c.Transports {
+		if t.Type != "vyandex" {
+			continue
+		}
+		if u := yandexdisk.EditURL(t.URL); u != t.URL {
+			c.Transports[i].URL = u
+			changed = true
+		}
+	}
+	return changed
 }
 
 // confSafe reports whether s survives as a node.conf value: the core's

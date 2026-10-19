@@ -298,6 +298,40 @@ func TestRoomsTheExitMadeAreKept(t *testing.T) {
 	}
 }
 
+func TestVolgaPublicLinkBecomesEditorLink(t *testing.T) {
+	m := newTestManager(t)
+	saved := []ClientConfig{{
+		ID: "old", Context: "https://disk.yandex.ru/d/4wYUcwmQ13opeQ",
+		Transports: []TransportEntry{{Type: "vyandex", URL: "https://disk.yandex.ru/d/4wYUcwmQ13opeQ"}},
+	}}
+	if err := m.store.Save(saved); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Load(); err != nil {
+		t.Fatal(err)
+	}
+	const editor = "https://disk.yandex.ru/edit/d/4wYUcwmQ13opeQ"
+	s, _ := m.Get("old")
+	if s.Config.Transports[0].URL != editor {
+		t.Fatalf("url = %q, want the editor link", s.Config.Transports[0].URL)
+	}
+	if s.Config.Context != saved[0].Context {
+		t.Fatalf("context changed to %q: links handed out would stop decrypting", s.Config.Context)
+	}
+	back, _ := m.store.Load()
+	conf, _ := os.ReadFile(m.channel("old").confPath())
+	if back[0].Transports[0].URL != editor || !strings.Contains(string(conf), "URL = "+editor) {
+		t.Fatalf("fix not saved: %+v\n%s", back, conf)
+	}
+
+	if err := m.Add(ClientConfig{ID: "new", Transports: []TransportEntry{{Type: "vyandex", URL: "https://disk.yandex.ru/d/abcdefgh"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := m.Get("new"); s.Config.Transports[0].URL != "https://disk.yandex.ru/edit/d/abcdefgh" {
+		t.Fatalf("Add kept the preview link: %+v", s.Config.Transports)
+	}
+}
+
 func TestRelativeDataDirBecomesAbsolute(t *testing.T) {
 	m, err := New(Options{DataDir: filepath.Join("testdata-rel", "pd"), Binary: os.Args[0]})
 	if err != nil {

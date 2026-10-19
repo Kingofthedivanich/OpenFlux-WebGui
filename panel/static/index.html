@@ -71,9 +71,13 @@
       <div id="f-generate-error" class="error-text"></div>
     </div>
 
-    <label>Прямое подключение, TCP-порт (необязательно)
-      <input type="number" id="f-direct-port" min="1" max="65535" placeholder="например 7443 — резерв, если все сервисы недоступны" />
+    <label>Прямое подключение, TCP-порт (рекомендуется)
+      <input type="number" id="f-direct-port" min="1" max="65535" placeholder="например 7443 — открой его в фаерволе" />
     </label>
+    <div class="hint-text">
+      Резерв, если сервисы недоступны. Ещё он нужен, когда Яндекс просит у сервера капчу:
+      приложение проходит её через туннель, а для этого нужен уже работающий канал.
+    </div>
 
     <label>Режим выходной ноды
       <select id="f-mode">

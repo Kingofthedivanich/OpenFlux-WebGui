@@ -21,6 +21,11 @@ optional Telegram bot does the same, and on a VPS the `openflux-ctl` console
   Telemost, Boards, Avito, Cups.online) plus a backup direct TCP port; the
   client holds them in one session and fails over by priority when one
   service is blocked.
+- When Yandex asks the server for a captcha (it does for datacenter
+  addresses), the app passes it through the tunnel — over a carrier that
+  already works. Give a client a direct port and open it in the firewall.
+  Volga documents are given as editor links (`disk.yandex.ru/edit/d/…`): the
+  `…/d/…` preview page is useless to vyandex.
 - The key and encryption context survive edits; rooms the exit made for
   Cups.online and Avito are written back into the config, so a link handed
   out keeps working across restarts and edits.

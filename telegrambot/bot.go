@@ -633,7 +633,7 @@ func (b *Bot) promptDirect(chatID int64, w *wizard) {
 	if w.old != nil && w.old.DirectPort > 0 {
 		kb.InlineKeyboard[0] = append(kb.InlineKeyboard[0], button(fmt.Sprintf("Оставить %d", w.old.DirectPort), "w:keepdirect"))
 	}
-	b.sendKB(chatID, "Прямое подключение: пришли TCP-порт (резерв, если все сервисы недоступны) или выбери:", kb)
+	b.sendKB(chatID, "Прямое подключение (рекомендуется): пришли TCP-порт и открой его в фаерволе. Это резерв, и через него приложение проходит капчу Яндекса, если её спросят у сервера.", kb)
 }
 
 func (b *Bot) finishWizard(chatID int64, w *wizard) {

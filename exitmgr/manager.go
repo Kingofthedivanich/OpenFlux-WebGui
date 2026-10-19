@@ -117,6 +117,9 @@ func (m *Manager) Load() error {
 	defer m.mu.Unlock()
 	fixed := false
 	for _, cfg := range cfgs {
+		if cfg.normalize() {
+			fixed = true
+		}
 		if cfg.Context == "" {
 			cfg.Context = defaultContext(cfg.ID, cfg.Transports)
 			fixed = true
@@ -131,6 +134,8 @@ func (m *Manager) Load() error {
 
 // Add registers a client, writes its channel and starts it.
 func (m *Manager) Add(cfg ClientConfig) error {
+	cfg.Transports = append([]TransportEntry(nil), cfg.Transports...)
+	cfg.normalize()
 	if cfg.Context == "" {
 		cfg.Context = defaultContext(cfg.ID, cfg.Transports)
 	}
@@ -168,6 +173,8 @@ func (m *Manager) Update(id string, cfg ClientConfig) error {
 		return fmt.Errorf("client %q not found", id)
 	}
 	cfg.ID = id
+	cfg.Transports = append([]TransportEntry(nil), cfg.Transports...)
+	cfg.normalize()
 	cfg.Context = old.cfg.Context
 	if cfg.Context == "" {
 		cfg.Context = defaultContext(id, cfg.Transports)
