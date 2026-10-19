@@ -7,8 +7,9 @@
 `--role=exit-panel` runs many clients on one server behind a small,
 login-gated web panel: add, edit and remove clients, see their status and
 logs, and get the `openflux://` link and QR code the OpenFlux apps scan. Given
-a Yandex Disk OAuth token, it creates Yandex Volga documents itself. On a VPS,
-the `openflux-ctl` console ([`deploy/menu.sh`](../deploy/menu.sh)) manages it.
+a Yandex Disk OAuth token, it creates Yandex Volga documents itself. An
+optional Telegram bot does the same, and on a VPS the `openflux-ctl` console
+([`deploy/menu.sh`](../deploy/menu.sh)) manages it all.
 
 ## How it works
 
@@ -48,6 +49,8 @@ expose the panel.
 | `--share-host` | first public IPv4 | address in links for the direct port |
 | `--yandex-token-file` | — | Disk OAuth token file (`disk.write`) to create Volga documents |
 | `--allow-private` | off | let clients reach the host's private networks |
+| `--telegram-bot-token-file` | — | file with the bot token from @BotFather |
+| `--telegram-admin-ids` | — | comma-separated Telegram user ids the bot answers |
 | `--debug` | `0` | channels' log level |
 
 On a VPS, make an `openflux-exit` systemd service whose `WorkingDirectory`
@@ -60,4 +63,6 @@ sudo openflux-ctl
 
 It writes the ExecStart itself, updates (`deploy/update.sh` checks
 `SHA256SUMS.txt` and rolls back on failure), adds and removes clients, shows
-a client's link and QR code (with `qrencode`) and logs.
+a client's link and QR code (with `qrencode`) and logs, and turns the
+Telegram bot on and off (items 10–12). The bot: `/list`, `/status <id>`
+(status, link and QR code), `/logs <id>`, `/add`, `/edit <id>`, `/remove <id>`.

@@ -53,6 +53,10 @@ const directPriority = 50
 // makesOwnRooms are the types whose exit creates its rooms and so take no URL.
 var makesOwnRooms = map[string]bool{"cupsonline": true, "avito": true}
 
+// MakesOwnRooms reports whether a channel's exit creates the rooms of a
+// transport of this type itself, so it takes no URL from the operator.
+func MakesOwnRooms(typ string) bool { return makesOwnRooms[typ] }
+
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 // Types lists the transport types a panel channel can carry, in priority order.

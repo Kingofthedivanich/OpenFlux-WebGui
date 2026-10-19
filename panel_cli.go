@@ -15,6 +15,7 @@ import (
 
 	"github.com/p1neappleXpress/OpenFlux/exitmgr"
 	"github.com/p1neappleXpress/OpenFlux/panel"
+	"github.com/p1neappleXpress/OpenFlux/telegrambot"
 )
 
 const roleExitPanel = "exit-panel"
@@ -49,14 +50,14 @@ func runExitPanel(args []string) int {
 	shareHost := fs.String("share-host", "", "Address clients dial for a client's direct port. Default: this host's first public IPv4")
 	allowPrivate := fs.Bool("allow-private", false, "Let clients reach this host's loopback, private networks and cloud metadata (refused by default)")
 	debug := fs.Int("debug", 0, "Debug level passed to every channel's core (0-3)")
-	// The old WebGui panel's flags, accepted and ignored so a systemd unit
-	// written for it still starts this binary: deploy/update.sh swaps the
-	// binary before openflux-ctl rewrites the unit, and rolls back if the
-	// service does not come up.
-	legacy := map[string]*string{}
-	for _, name := range []string{"panel-key-file", "telegram-bot-token", "telegram-admin-ids"} {
-		legacy[name] = fs.String(name, "", "Ignored: a flag of the old WebGui panel")
-	}
+	botToken := fs.String("telegram-bot-token", "", "Optional: Telegram bot token (from @BotFather) for the admin bot; prefer --telegram-bot-token-file")
+	botTokenFile := fs.String("telegram-bot-token-file", "", "Optional: file holding the Telegram bot token, so it stays out of the process list")
+	botAdmins := fs.String("telegram-admin-ids", "", "Comma-separated Telegram user ids allowed to use the bot (required with a bot token)")
+	// The old WebGui panel's Noise key flag, accepted and ignored so a
+	// systemd unit written for it still starts this binary: deploy/update.sh
+	// swaps the binary before openflux-ctl rewrites the unit, and rolls back
+	// if the service does not come up.
+	legacy := map[string]*string{"panel-key-file": fs.String("panel-key-file", "", "Ignored: a flag of the old WebGui panel")}
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "openflux --role=exit-panel --panel-user=U --panel-pass=P [options]\n\n")
 		fs.PrintDefaults()
@@ -85,6 +86,25 @@ func runExitPanel(args []string) int {
 		*data = dir
 	}
 
+	token := *botToken
+	if *botTokenFile != "" {
+		b, err := os.ReadFile(*botTokenFile)
+		if err != nil {
+			log.Printf("--telegram-bot-token-file: %v", err)
+			return 2
+		}
+		token = strings.TrimSpace(string(b))
+	}
+	var admins []int64
+	if token != "" {
+		ids, err := telegrambot.ParseAdminIDs(*botAdmins)
+		if err != nil {
+			log.Printf("--telegram-admin-ids: %v (required with a bot token: only these users may use the bot)", err)
+			return 2
+		}
+		admins = ids
+	}
+
 	var extra []string
 	if *shareHost != "" {
 		extra = append(extra, "--share-host", *shareHost)
@@ -107,9 +127,10 @@ func runExitPanel(args []string) int {
 	}
 	log.Printf("Exit panel: %d client(s) from %s", len(mgr.List()), *data)
 
+	web := panel.NewServer(mgr, *user, *pass, *yandexTokenFile)
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           panel.NewServer(mgr, *user, *pass, *yandexTokenFile),
+		Handler:           web,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if host, _, _ := strings.Cut(*addr, ":"); host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
@@ -119,6 +140,12 @@ func runExitPanel(args []string) int {
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
 	log.Printf("Admin panel: http://%s (login required)", *addr)
+
+	botCtx, stopBot := context.WithCancel(context.Background())
+	defer stopBot()
+	if token != "" {
+		go telegrambot.New(token, admins, mgr, web).Run(botCtx)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	notifySignals(sigCh)

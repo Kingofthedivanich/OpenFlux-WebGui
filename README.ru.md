@@ -2,7 +2,7 @@
 
 [English](README.md) | **Русский**
 
-> **Этот форк** ([Kingofthedivanich/OpenFlux-WebGui](https://github.com/Kingofthedivanich/OpenFlux-WebGui)) добавляет мультиклиентскую панель выходной ноды с веб-интерфейсом и защиту экзита от SSRF: см. [docs/exit-panel.ru.md](docs/exit-panel.ru.md).
+> **Этот форк** ([Kingofthedivanich/OpenFlux-WebGui](https://github.com/Kingofthedivanich/OpenFlux-WebGui)) добавляет мультиклиентскую панель выходной ноды с веб-интерфейсом и Telegram-ботом и защиту экзита от SSRF: см. [docs/exit-panel.ru.md](docs/exit-panel.ru.md).
 
 Исследовательский инструмент сетевого стека. IPv4 TCP/UDP-туннель с подключаемыми
 транспортами, батчированным zstd-кодеком и двумя бэкендами выходной ноды

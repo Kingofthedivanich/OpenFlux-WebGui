@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +17,22 @@ func (s *Server) getYandexDisk() *yandexdisk.Client {
 	defer s.yandexMu.RUnlock()
 	return s.yandexDisk
 }
+
+// YandexDocAvailable reports whether a Yandex token is set, so documents can
+// be created (the Telegram bot asks before offering its button).
+func (s *Server) YandexDocAvailable() bool { return s.getYandexDisk() != nil }
+
+// CreateYandexDoc creates a public blank vyandex document named after name
+// with the token set in the panel, and returns its link.
+func (s *Server) CreateYandexDoc(ctx context.Context, name string) (string, error) {
+	disk := s.getYandexDisk()
+	if disk == nil {
+		return "", errNoYandexToken
+	}
+	return disk.CreateDoc(ctx, name)
+}
+
+var errNoYandexToken = errors.New("no Yandex token: set one in the web panel or openflux-ctl")
 
 // handleYandexDocAvailable reports two independent things the frontend needs:
 // "configured" (was --yandex-token-file passed at all, i.e. should the token

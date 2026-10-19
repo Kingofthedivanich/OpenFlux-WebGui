@@ -5,6 +5,26 @@ All notable changes to the OpenFlux core. Format loosely follows
 
 ## [Unreleased]
 
+## [0.13.0-wg.3] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
+
+### Added
+
+- **Telegram bot for the exit panel** (`--telegram-bot-token-file` or
+  `--telegram-bot-token`, `--telegram-admin-ids`): `/list`, `/status <id>`
+  with the client's `openflux://` link and QR code, `/logs`, `/add` and
+  `/edit` wizards with several transports, a direct port and a button that
+  creates a Volga document, `/remove` with a confirmation. Only the listed
+  user ids get an answer. `openflux-ctl` turns it on and off (items 10-12)
+  and keeps the token in a root-only file.
+
+### Fixed
+
+- The bot token no longer reaches the logs. The Bot API takes it in the URL
+  and net/http repeats the URL in every transport error, which the old
+  WebGui bot logged as is on each Telegram timeout.
+- `openflux-ctl` writes the systemd override root-only: it carries the
+  panel password.
+
 ## [0.13.0-wg.2] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
 
 ### Fixed

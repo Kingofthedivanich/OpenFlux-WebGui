@@ -33,6 +33,11 @@ PANEL_PASS=""
 PANEL_DATA="$SCRIPT_DIR/openflux-panel"
 SHARE_HOST=""
 YANDEX_TOKEN_FILE=""
+# The bot's token lives in a root-only file, passed as --telegram-bot-token-file,
+# so it is in neither the unit nor the process list.
+TELEGRAM_TOKEN_FILE="$SCRIPT_DIR/telegram.token"
+TELEGRAM_ADMIN_IDS=""
+TELEGRAM_BOT_TOKEN="" # the old console kept the token itself; moved to the file on load
 
 TYPES="vyandex yandex mailru telemost boards avito cupsonline"
 
@@ -71,6 +76,18 @@ load_config() {
     # shellcheck source=/dev/null
     [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
     fix_legacy_panel_data
+    migrate_bot_token
+}
+
+# The old console (and old units) carried the bot token itself: move it into
+# TELEGRAM_TOKEN_FILE.
+migrate_bot_token() {
+    [ -n "$TELEGRAM_BOT_TOKEN" ] || return 0
+    if [ ! -s "$TELEGRAM_TOKEN_FILE" ]; then
+        (umask 077 && printf '%s\n' "$TELEGRAM_BOT_TOKEN" >"$TELEGRAM_TOKEN_FILE")
+        echo "note: moved the Telegram bot token into $TELEGRAM_TOKEN_FILE" >&2
+    fi
+    TELEGRAM_BOT_TOKEN=""
 }
 
 # The old panel kept its clients in a file (openflux-clients.json); this one
@@ -96,6 +113,8 @@ PANEL_PASS=$(printf '%q' "$PANEL_PASS")
 PANEL_DATA=$(printf '%q' "$PANEL_DATA")
 SHARE_HOST=$(printf '%q' "$SHARE_HOST")
 YANDEX_TOKEN_FILE=$(printf '%q' "$YANDEX_TOKEN_FILE")
+TELEGRAM_TOKEN_FILE=$(printf '%q' "$TELEGRAM_TOKEN_FILE")
+TELEGRAM_ADMIN_IDS=$(printf '%q' "$TELEGRAM_ADMIN_IDS")
 EOF
     chmod 600 "$CONFIG_FILE"
 }
@@ -115,7 +134,11 @@ detect_from_override() {
     val="$(grep -oP '(?<=--panel-data=)\S+' <<<"$line" || true)"; [ -n "$val" ] && PANEL_DATA="$(strip_quotes "$val")"
     val="$(grep -oP '(?<=--share-host=)\S+' <<<"$line" || true)"; [ -n "$val" ] && SHARE_HOST="$(strip_quotes "$val")"
     val="$(grep -oP '(?<=--yandex-token-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && YANDEX_TOKEN_FILE="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--telegram-bot-token-file=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_TOKEN_FILE="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--telegram-bot-token=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_BOT_TOKEN="$(strip_quotes "$val")"
+    val="$(grep -oP '(?<=--telegram-admin-ids=)\S+' <<<"$line" || true)"; [ -n "$val" ] && TELEGRAM_ADMIN_IDS="$(strip_quotes "$val")"
     fix_legacy_panel_data
+    migrate_bot_token
     return 0
 }
 
@@ -177,6 +200,10 @@ apply_override() {
     exec_start="$exec_start $(sdarg --panel-data "$PANEL_DATA")"
     [ -n "$SHARE_HOST" ] && exec_start="$exec_start $(sdarg --share-host "$SHARE_HOST")"
     [ -n "$YANDEX_TOKEN_FILE" ] && exec_start="$exec_start $(sdarg --yandex-token-file "$YANDEX_TOKEN_FILE")"
+    if bot_enabled; then
+        exec_start="$exec_start $(sdarg --telegram-bot-token-file "$TELEGRAM_TOKEN_FILE")"
+        exec_start="$exec_start $(sdarg --telegram-admin-ids "$TELEGRAM_ADMIN_IDS")"
+    fi
 
     # A clients directory without clients.json on a service that already
     # runs almost always means PANEL_DATA points at the wrong place: the
@@ -191,7 +218,8 @@ apply_override() {
         fi
     fi
 
-    cat >"$dir/override.conf" <<EOF
+    # Root-only: the unit carries the panel password.
+    (umask 077 && cat >"$dir/override.conf") <<EOF
 [Service]
 ExecStart=
 ExecStart=$exec_start
@@ -358,6 +386,52 @@ do_update() {
 svc_status() { systemctl status "$SERVICE" --no-pager || true; }
 svc_logs() { journalctl -u "$SERVICE" -n 40 --no-pager; }
 
+# ---------- Telegram bot ----------
+
+bot_enabled() { [ -n "$TELEGRAM_ADMIN_IDS" ] && [ -s "$TELEGRAM_TOKEN_FILE" ]; }
+
+bot_configure() {
+    echo "Bot token: @BotFather (https://t.me/BotFather) -> /newbot or /mybots -> API Token."
+    echo "Your numeric id: @userinfobot (https://t.me/userinfobot)."
+    local token ids
+    read -rsp "Bot token (hidden; Enter keeps the current one): " token
+    echo
+    if [ -z "$token" ] && [ ! -s "$TELEGRAM_TOKEN_FILE" ]; then
+        echo "a token is required."
+        return 1
+    fi
+    ids="$(prompt_default "Admin Telegram id(s), comma-separated" "$TELEGRAM_ADMIN_IDS")"
+    if ! [[ "$ids" =~ ^[0-9]+([[:space:]]*,[[:space:]]*[0-9]+)*$ ]]; then
+        echo "admin ids must be numbers separated by commas."
+        return 1
+    fi
+    if [ -n "$token" ]; then
+        (umask 077 && printf '%s\n' "$token" >"$TELEGRAM_TOKEN_FILE") || return 1
+    fi
+    TELEGRAM_ADMIN_IDS="$ids"
+    save_config
+    apply_override || return 1
+    sleep 2
+    journalctl -u "$SERVICE" --since "-15s" --no-pager -o cat | grep -F '[TGBOT]' | tail -3
+    echo "Write /help to the bot from an admin account."
+}
+
+bot_disable() {
+    TELEGRAM_ADMIN_IDS=""
+    rm -f "$TELEGRAM_TOKEN_FILE"
+    save_config
+    apply_override
+}
+
+bot_status() {
+    if ! bot_enabled; then
+        echo "Telegram bot: off."
+        return 0
+    fi
+    echo "Telegram bot: on, admin id(s): $TELEGRAM_ADMIN_IDS, token in $TELEGRAM_TOKEN_FILE"
+    journalctl -u "$SERVICE" --no-pager -o cat | grep -F '[TGBOT]' | tail -5 || echo "(no [TGBOT] lines yet)"
+}
+
 # ---------- menu ----------
 
 menu() {
@@ -377,6 +451,10 @@ menu() {
  7) Service status
  8) Service logs
  9) Reconfigure (panel address/login/paths)
+----------------------------------------
+10) Telegram bot: enable / change token or admins
+11) Telegram bot: disable
+12) Telegram bot: status
  0) Exit
 ========================================
 EOF
@@ -393,6 +471,9 @@ EOF
         7) svc_status ;;
         8) svc_logs ;;
         9) first_time_setup ;;
+        10) bot_configure ;;
+        11) bot_disable ;;
+        12) bot_status ;;
         0) exit 0 ;;
         *) echo "invalid choice" ;;
     esac
