@@ -41,6 +41,7 @@ type Session struct {
 
 	candidate     *candidatePeer
 	candidateLast time.Time
+	nudgeLast     time.Time // the last hello an exit sent to a peer that spoke out of turn
 
 	links map[string]*transportLink
 	order []string
@@ -114,6 +115,7 @@ const (
 
 type transportLink struct {
 	name      string
+	mtu       int // the packet size the carrier declared (CarrierMTUer), 0 if it said nothing
 	raw       Transport
 	demux     *frameDemux
 	encrypted *EncryptedTransport
@@ -179,6 +181,9 @@ func (s *Session) SetAlternateContexts(contexts []string) {
 // batched(encrypted(session side)) and, with classic mode on, the classic
 // encrypted(codec(classic side)) sharing its keys.
 func (s *Session) newLink(name string, raw Transport, secret, context string, priority int) (*transportLink, error) {
+	if p, ok := raw.(PreferredCarrier); ok && p.Preferred() {
+		priority += preferredBoost
+	}
 	d := newFrameDemux(raw, name)
 	enc, err := NewEncryptedTransport(d.side(true), secret, context, s.exit)
 	if err != nil {
@@ -193,17 +198,30 @@ func (s *Session) newLink(name string, raw Transport, secret, context string, pr
 	if h, ok := raw.(BatchSizeHinter); ok {
 		batchHint = h.PreferredBatchBytes()
 	}
+	mtu := 0
+	if c, ok := raw.(CarrierMTUer); ok {
+		mtu = c.CarrierMTU()
+	}
 	link := &transportLink{
 		name:      name,
+		mtu:       mtu,
 		raw:       raw,
 		demux:     d,
 		encrypted: enc,
 		batched:   NewBatchedTransport(enc, batchHint),
 		priority:  priority,
 	}
+	cheap := false
+	if c, ok := raw.(CheapBytesCarrier); ok {
+		cheap = c.CheapBytes()
+	}
+	link.batched.gate.cheapBytes = cheap
 	if classic != ClassicOff {
 		link.classicCodec = NewCodecTransport(d.side(false), codec, !s.exit)
 		link.classicEnc = enc.SharingKeys(link.classicCodec)
+	}
+	if link.classicCodec != nil {
+		link.classicCodec.gate.cheapBytes = cheap
 	}
 	return link, nil
 }
@@ -323,7 +341,7 @@ func (s *Session) ReplaceTransport(name string, raw Transport, secret, context s
 	started := s.started
 	s.links[name] = link
 	s.order = dropFromOrder(s.order, name)
-	s.order = insertByPriority(s.order, name, priority, s.links)
+	s.order = insertByPriority(s.order, name, link.priority, s.links)
 	s.mu.Unlock()
 
 	// Tear the old pipeline down after the new link is in place, so a packet
@@ -1027,7 +1045,12 @@ func (s *Session) helloVia(name string) error {
 
 // ---- IPv4 data ----
 
-func (s *Session) Send(p []byte) error {
+func (s *Session) Send(p []byte) error { return s.send(p, nil) }
+
+// send sends one IPv4 packet p. raw, when not nil, is a buffer whose tail from
+// control.EnvelopeSize is p itself (SendFill): the envelope is written in front
+// of it in place and nothing is copied.
+func (s *Session) send(p []byte, raw []byte) error {
 	s.mu.Lock()
 	if !s.stopped && s.classic != ClassicOff {
 		// A client whose exit has not answered the handshake, or an exit
@@ -1059,28 +1082,41 @@ func (s *Session) Send(p []byte) error {
 		Data:  &control.DataTail{Sequence: seq},
 	}
 	links := s.liveLinksLocked()
+	big := len(p) > DefaultCarrierMTU && s.hasBigLinkLocked()
 	s.mu.Unlock()
 
 	if len(links) == 0 {
 		return errors.New("session: no live transport")
 	}
 
-	raw, err := env.Encode()
-	if err != nil {
+	// One buffer for envelope and payload; the batcher takes it over, so the
+	// packet is copied once between the tunnel stack and the wire.
+	if raw == nil {
+		var err error
+		raw, err = env.AppendTo(make([]byte, 0, control.EnvelopeSize+len(p)))
+		if err != nil {
+			return err
+		}
+		raw = append(raw, p...)
+	} else if _, err := env.AppendTo(raw[:0]); err != nil {
 		return err
 	}
-	raw = append(raw, p...)
 
 	top := topLinks(links)
 	key := extractFlowKeyBytes(p)
 	idx := int(flowHashBytes(key) % uint64(len(top)))
 	chosen := top[idx]
+	if big {
+		if err := fitLink(chosen, len(p)); err != nil {
+			return err
+		}
+	}
 
 	n := s.cntDataSent.Add(1)
 	if n == 1 || n%100 == 0 {
 		utils.Debugf("[SESSION] send IPv4 #%d seq=%d via %q size=%d proto=%d", n, seq, chosen.name, len(p), p[9])
 	}
-	return chosen.batched.Send(raw)
+	return chosen.batched.SendOwned(raw)
 }
 
 // liveLinksLocked returns the carriers to route through, in priority order.
@@ -1168,7 +1204,7 @@ func permittedPacket(p []byte, limits PeerParameters) error {
 		return errors.New("session: requires complete IPv4 packets")
 	}
 	if len(p) > limits.MaxPacketSize {
-		return fmt.Errorf("IPv4 packet exceeds negotiated maximum %d", limits.MaxPacketSize)
+		return &PacketTooLargeError{Limit: limits.MaxPacketSize}
 	}
 	switch p[9] {
 	case 6:
@@ -1475,8 +1511,10 @@ func (s *Session) receiveIPv4(link *transportLink, p []byte, env *control.Envelo
 	}
 	if !s.ready || s.stopped {
 		s.cntDataDrop.Add(1)
+		nudge := s.nudgeLocked()
 		s.mu.Unlock()
 		utils.Debugf("[SESSION] IPv4 from %q dropped: session not ready/stopped", link.name)
+		s.nudge(link, nudge)
 		return
 	}
 	if env.Local != s.peer || env.Peer != s.local {
@@ -1508,7 +1546,9 @@ func (s *Session) receiveIPv4(link *transportLink, p []byte, env *control.Envelo
 			n, env.Data.Sequence, link.name, len(payload), payload[9])
 	}
 	if cb != nil {
-		cb(append([]byte(nil), payload...))
+		// p is this packet's own capacity-limited view of its decoded batch
+		// (see decodeBatch), nobody else touches it: no copy needed.
+		cb(payload)
 	}
 }
 
@@ -1519,8 +1559,10 @@ func (s *Session) receiveControl(link *transportLink, p []byte, env *control.Env
 	}
 	s.mu.Lock()
 	if !s.ready || s.stopped {
+		nudge := s.nudgeLocked()
 		s.mu.Unlock()
 		utils.Debugf("[SESSION] control from %q dropped: session not ready/stopped", link.name)
+		s.nudge(link, nudge)
 		return
 	}
 	if env.Local != s.peer || env.Peer != s.local {
@@ -1669,4 +1711,36 @@ func minInt(a, b int) int {
 
 func shortID(id [32]byte) string {
 	return hex.EncodeToString(id[:4])
+}
+
+// nudgeLocked reports whether this exit should say hello now to a peer that has just
+// spoken to it with a valid key but without a handshake: the exit has no client, so it
+// has restarted (or never met this one) while the client still believes in the old
+// session. The client re-handshakes only after its carriers have been silent for
+// linkTimeout (30 s), and not at all if it never learned that its exit answers
+// keepalives (a client younger than a keepalive interval). A hello at once makes it
+// take the new exit over through the candidate exchange in about a round trip.
+// Only an authenticated packet reaches here, and the answer is at most one per second,
+// so nobody can use it to make the exit talk. Caller holds s.mu.
+func (s *Session) nudgeLocked() bool {
+	if !s.exit || s.ready || s.stopped {
+		return false
+	}
+	now := time.Now()
+	if now.Sub(s.nudgeLast) < time.Second {
+		return false
+	}
+	s.nudgeLast = now
+	return true
+}
+
+// nudge sends the hello nudgeLocked asked for over the link the peer spoke on.
+func (s *Session) nudge(link *transportLink, send bool) {
+	if !send {
+		return
+	}
+	utils.Debugf("[SESSION] %q: a peer speaks without a handshake (this exit restarted?): saying hello", link.name)
+	if err := s.helloVia(link.name); err != nil {
+		utils.Debugf("[SESSION] hello nudge via %q: %v", link.name, err)
+	}
 }

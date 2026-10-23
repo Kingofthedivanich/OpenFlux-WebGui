@@ -17,6 +17,10 @@ var yandexCookiesFile string
 // Netscape cookies.txt for code.avito.ru.
 var avitoCookiesStr string
 
+// nativeScriptsDir is --native-scripts: JS packages that replace the native
+// transports of the same wire (registry.Options.ScriptDir).
+var nativeScriptsDir string
+
 // transportFactory builds a raw transport from a control.TransportConfig.
 // main.go passes it into manager.New, and manager calls it whenever the peer
 // asks the exit to bring up an additional transport at runtime. The types are
@@ -40,6 +44,7 @@ func transportFactory(baseCfg transport.TransportConfig, isExit bool) manager.Fa
 			IsExit:            isExit,
 			YandexCookiesFile: yandexCookiesFile,
 			AvitoCookies:      avitoCookiesStr,
+			ScriptDir:         nativeScriptsDir,
 		})
 	}
 }

@@ -78,8 +78,14 @@ func TestParityMailruChatData(t *testing.T) {
 	}
 	for _, c := range cases {
 		vm := loadJS(t, "js/mailru.js")
-		if err := vm.Set("ownID", c.own); err != nil {
+		// The JS tells its own echo by the editor ids it authenticated as.
+		if _, err := vm.RunString(`ourIDs = {}; ourConns = {};`); err != nil {
 			t.Fatal(err)
+		}
+		if c.own != "" {
+			if _, err := vm.RunString(`ourIDs["` + c.own + `"] = true;`); err != nil {
+				t.Fatal(err)
+			}
 		}
 		var got []string
 		if err := vm.Set("emit", func(call goja.FunctionCall) goja.Value {
@@ -90,7 +96,7 @@ func TestParityMailruChatData(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		jsCall(t, vm, "handleMessage", c.frame)
+		jsCall(t, vm, "handleMessage", map[string]interface{}{"active": true}, c.frame)
 
 		var want []string
 		for _, b := range mailru.DecodeChatData([]byte(c.frame), c.own) {

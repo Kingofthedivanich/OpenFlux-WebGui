@@ -43,6 +43,9 @@ type PackageManifest struct {
 	// like everything else here, so an update source cannot be swapped for a
 	// package without re-signing it.
 	Update []string `json:"update,omitempty"`
+	// Auth repeats the script's info().auth so a listing can show the
+	// sign-in a transport needs without running it.
+	Auth *Auth `json:"auth,omitempty"`
 }
 
 // APIVersion is the host-API generation this core implements. A package

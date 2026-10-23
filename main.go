@@ -235,6 +235,12 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--node-wizard" {
 		os.Exit(runNodeWizard(os.Stdin, os.Stdout))
 	}
+	// What this core can do, one word a line, for node-install.sh to ask
+	// before it relies on it (an older core fails on the unknown flag).
+	if len(os.Args) == 2 && os.Args[1] == "--features" {
+		fmt.Print(coreFeatures)
+		return
+	}
 	// The core's own openflux:// parser and builder for apps and scripts,
 	// so a link is read and made the same way everywhere: JSON on stdout,
 	// before any banner.
@@ -305,6 +311,7 @@ func main() {
 	yandexURL := flag.String("yandex-url", "", "URL for the yandex transport (overrides --url in --transports mode)")
 	vyandexURL := flag.String("vyandex-url", "", "URL for the vyandex transport")
 	flag.StringVar(&yandexCookiesFile, "yandex-cookies-file", "", "Netscape cookies.txt with a Yandex login for vyandex transports")
+	flag.StringVar(&nativeScriptsDir, "native-scripts", "", "Directory of JS packages (<type>.flux, signed by the project's key) that replace the native transports of the same wire")
 	boardsURL := flag.String("boards-url", "", "URL for the boards transport")
 	mailruURL := flag.String("mailru-url", "", "URL (weblink) for the mailru transport")
 	cupsonlineURL := flag.String("cupsonline-url", "", "URL for the cupsonline transport")
@@ -315,7 +322,8 @@ func main() {
 	scriptPath := flag.String("script-path", "", "Path to the script transport's <name>.flux or <name>.js (needs <name>.js.sig beside a bare .js)")
 	scriptPubkey := flag.String("script-pubkey", "", "Hex-encoded ed25519 public key the script transport's signature is checked against")
 	scriptName := flag.String("script-name", "", "Carrier name for the script transport (default: the name in its own info())")
-	scriptAutoUpdate := flag.Bool("script-auto-update", false, "Node: keep .flux transports current and self-heal (check/apply auto-OK updates, roll back, hot-swap without a restart)")
+	refusePeerLogin := flag.Bool("refuse-peer-login", false, "Exit: take no account sign-in (Yandex, Mail.ru login cookies) from clients over the Session; only the owner's push over SSH (node-install.sh set-cookies) changes it")
+	scriptAutoUpdate := flag.Bool("script-auto-update", false,"Node: keep .flux transports current and self-heal (check/apply auto-OK updates, roll back, hot-swap without a restart)")
 	scriptUpdateChannel := flag.String("script-update-channel", "stable", "Node: update channel for --script-auto-update (stable | nightly)")
 	configPath := flag.String("config", "",
 		"Path to an OpenFlux .conf file. Command-line flags override values from the file.")
@@ -535,6 +543,7 @@ DEPRECATED (removed in v2)
 		applyConfString(conf.Interface, "Transport", "transport", transportType, setFlags)
 		applyConfString(conf.Interface, "Mode", "mode", mode, setFlags)
 		applyConfString(conf.Interface, "Codec", "codec", codec, setFlags)
+		applyConfString(conf.Interface, "NativeScripts", "native-scripts", &nativeScriptsDir, setFlags)
 		applyConfString(conf.Interface, "Socks5", "socks5", socksAddr, setFlags)
 		applyConfString(conf.Interface, "EncryptionKeyFile", "encryption-key-file", encryptionKeyFile, setFlags)
 		applyConfString(conf.Interface, "SessionContext", "session-context", sessionContextFlag, setFlags)
@@ -558,6 +567,9 @@ DEPRECATED (removed in v2)
 		if v, ok := confValue(conf.Interface, "AllowPrivate"); ok && !setFlags["allow-private"] {
 			*allowPrivate = confBool(v, false)
 		}
+		if v, ok := confValue(conf.Interface, "RefusePeerLogin"); ok && !setFlags["refuse-peer-login"] {
+			*refusePeerLogin = confBool(v, false)
+		}
 		if v, ok := confValue(conf.Interface, "Sensitive"); ok && !setFlags["sensitive"] && !setFlags["sensetive"] {
 			*sensitive = confBool(v, *sensitive)
 		}
@@ -580,6 +592,9 @@ DEPRECATED (removed in v2)
 					"dial":    t.Values["Dial"],
 					"listen":  t.Values["Listen"],
 					"is_exit": isExit,
+				}
+				if v := t.Values["Prefer"]; v != "" {
+					spec.Params["prefer"] = confBool(v, true)
 				}
 			}
 			if spec.Type == "oneme" {
@@ -1040,6 +1055,13 @@ DEPRECATED (removed in v2)
 					utils.Debugf("[COOKIE] replay %s: %v", spec.Name, err)
 				}
 			}
+			// The exit keeps its owner's sign-ins fresh: pushes over SSH
+			// (the inbox, SIGHUP), what the services refresh, and a state
+			// file the owner's app reads (signin_node.go).
+			if isExit {
+				managerInst.SetRefusePeerLogin(*refusePeerLogin)
+				startExitSignInKeeper(managerInst, store)
+			}
 		}
 
 		// Hook the Session control dispatcher into the manager.
@@ -1097,7 +1119,7 @@ DEPRECATED (removed in v2)
 		}
 		inner, err := registry.New(*transportType, globalDocUrl,
 			classicParams(maxToken, maxUid, isExit, *lanesFlag),
-			registry.Options{Base: config, IsExit: isExit, YandexCookiesFile: yandexCookiesFile, AvitoCookies: avitoCookiesStr})
+			registry.Options{Base: config, IsExit: isExit, YandexCookiesFile: yandexCookiesFile, AvitoCookies: avitoCookiesStr, ScriptDir: nativeScriptsDir})
 		if err != nil {
 			log.Fatalf("%s: %v", *transportType, err)
 		}

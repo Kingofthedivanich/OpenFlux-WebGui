@@ -201,6 +201,11 @@ func TestAutoNodeFailureCooldownAndNoNull(t *testing.T) {
 	}
 	e.clock.add(4 * time.Minute)
 	e.call("GET", "/api/v1/subscription", token, nil)
+	// The attempt runs in the background: wait for it rather than catch it.
+	deadline = time.Now().Add(5 * time.Second)
+	for fake.count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if c := fake.count(); c != 2 {
 		t.Fatalf("after the window calls=%d, want another attempt", c)
 	}

@@ -3,7 +3,182 @@
 All notable changes to the OpenFlux core. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.15.1-wg.1] - 2026-10-23 (Kingofthedivanich/OpenFlux-WebGui)
+
+The WebGui fork moved onto OpenFluxTeam/OpenFlux 0.15.1, where the core is
+developed now (p1neappleXpress/OpenFlux stopped at 0.13.0). Everything in the
+OpenFluxTeam sections below comes with it, above all the cups.online exit
+that went silent after standing idle (0.15.1), a direct client moving to a
+new connection in seconds instead of minutes (0.15.1), Avito's 403/429
+(0.14.1, 0.14.5) and an exit no longer handing its Mail.ru sign-in to a
+client (0.14.3). The fork's exit panel, Telegram bot, Yandex sign-in, SSRF
+guard and openflux-ctl are unchanged; Bitrix24 from p1neappleXpress 0.13.0
+stays. Pair it with OpenFluxTeam's apps (Android 3.10.3).
+
+## [0.15.1] / node-v1.8.1 - 2026-10-22 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.8.1**. Both fixes are on the exit: update the nodes.
+
+### Fixed
+
+- **No incoming traffic after a node stood idle (cups).** An exit whose client went away kept sending its keepalives into
+  the striped lanes and gave each piece up after a while, but never brought the lanes' in-flight counts down; once every
+  lane stood at its window (minutes to hours of idle) no lane sent again, and a client connecting later was heard but got
+  nothing back until the node was restarted. A lane's window now counts only the pieces really in flight on it.
+- **A client that moved to another network is served again in seconds (direct).** A phone whose Wi-Fi went off left its
+  old connection half open on the exit (behind a NAT it can even look healthy), and the exit, serving one connection at a
+  time, kept its new one waiting unread for about 7 minutes. Connections are now accepted alongside the active one: a new
+  one counts once it has delivered a whole record and takes over when the active one has been quiet for 25 s (a live client
+  sends keepalives every 10 s, so a stray connection cannot push it out, and a port scanner never completes a record). On
+  Linux, TCP_USER_TIMEOUT 25 s and quicker keepalive probes find a dead peer in seconds.
+
+## [0.15.0] / node-v1.8.0 - 2026-10-22 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.8.0**: the node runs the new script host, so clients and nodes with JS transports
+should both be updated.
+
+### Added
+
+- **JS transports declare their sign-in.** A script names the account it needs and the cookies to give it (`auth` in the
+  manifest and `info()`, reported by `--inspect-script`); the apps seed the transport's cookie jar with only those.
+  `raise('authRequired')` logs a line the apps show (account, label, reason).
+- **A script's rooms are lanes.** The rooms a script opens are striped by the core's `StripedTransport` like a native
+  carrier's; received packets are delivered in order on one goroutine and writes are batched per trip to the loop. A
+  script's room list is printed like the natives'.
+- **Host API:** `shared.read/write` (a few bytes shared with the transport's copies in other processes, e.g. a service's rate
+  budget), `info().batchBytes` (the transport's batch size), dials go IPv4 first, ws dial errors carry `Retry-After`.
+- **Media API for conference carriers** (`webrtc.newPeerConnection({media})`): a publisher track with its own frame clock
+  carrying data in VP8/VP9/H264 keyframes, and a subscriber that reassembles a remote track back to the tunnel.
+- **`--native-scripts` / `NativeScripts`:** a native transport type runs on its JS package of the same wire (`<id>.flux` in
+  that directory, signed by the project's key), and on the native code when there is none or it does not load.
+
+### Changed
+
+- **The bundled transports are signed by the OpenFluxTeam key** (`96df2b44…6b1a`); upstream's key stays official, so what
+  was installed from it stays first-party and updates to ours. Shipped: cupsonline 1.3.0 (`rooms`: several rooms at
+  once, the way to more speed), mailru 1.3.0, yandex / vyandex 1.2.x and boards 1.2.0 (real cursor length, padded
+  keepalives at a jittered interval, the Yandex sign-in in `auth`).
+- **Direct: a 4 MiB send buffer on the carrier socket outside Linux.** Windows left it to its own tuning, and on a 72 ms path
+  an upload settled at 8-40 Mbit/s; with the buffer it holds 40-60.
+
+## [0.14.5] / node-v1.7.3 - 2026-10-18 (OpenFluxTeam/OpenFlux)
+
+node-install.sh still installs **node-v1.7.3** (the binary is unchanged).
+
+### Added
+
+- **The context rotation timings can be tuned.** The encrypted transport's KDF context rotation was fixed in code (the first
+  rotate after 4 s, then every 2 s, and a peer unheard for 2 minutes starts trying again); it now reads
+  `OPENFLUX_CTX_FIRST_ROTATE_MS`, `OPENFLUX_CTX_ROTATE_MS` and `OPENFLUX_CTX_UNLOCK_MS`, keeping the old values as defaults.
+
+### Fixed
+
+- **Avito: a new room is joined, once, as Avito's web client does.** Avito's realtime side no longer knows a room that was only
+  made by the REST call (`room is not found in MongoDB` when its document is created, for ever), so a node with fresh rooms
+  never connected, and `429` was only part of it. The carrier now joins the room over Socket.IO (`join` with a name and the room
+  id, answered by `initialize`) when Avito says the room is unknown, then connects again; the join is needed once per room and
+  it counts against the same limit of 10 handshakes a minute. Rooms made before keep working as they were.
+
+- **Avito: dials are budgeted to what Avito lets an address do.** Measured from a server, Avito lets an address make 10
+  handshakes in any 60 seconds, whatever the rooms need; a node with 16 rooms
+  asked for them all at once, and several nodes on one address asked for several times that, so Avito answered 429 and
+  every retry kept it so. The carrier now spends that budget ahead (a burst of 4, then one per 12 s; `OPENFLUX_AVITO_BURST`,
+  `OPENFLUX_AVITO_REFILL_MS`), shared by all the Avito processes of the host (room creation keeps only the pause after a 429).
+- **Avito: the pause after a 429 is shared by every process on the host and grows up to half an hour.** The nodes of one server
+  all dial Avito from one address and the dials of one node's rooms were paced, but each process paced itself, and a pause
+  that stopped at 2 minutes meant a refusal about every minute for ever. The pause is now kept in a small file in the temp
+  directory (`OPENFLUX_AVITO_GATE_FILE`, `off` to keep it per process) that every Avito process reads before it dials,
+  and it doubles from 30 s to 30 minutes until a handshake goes through and Avito stays quiet for 2 minutes.
+
+## [0.14.4] / node-v1.7.3 - 2026-10-17 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.7.3**.
+
+### Added
+
+- **A node keeps its sign-in fresh.** The node saves the login cookies that Yandex or Mail.ru refresh in a working
+  transport's jar (every 5 minutes), which used to be lost at every restart. The owner's app can give a node a new sign-in
+  over SSH without a restart: `node-install.sh set-cookies` drops it into `cookies.json.incoming` and signals the node,
+  which merges it into that document only (a Yandex login never goes to a Mail.ru document or the reverse; signed-out jars
+  and unchanged ones are refused; the other document is untouched). `RefusePeerLogin = yes` (`--refuse-peer-login`)
+  makes an exit ignore login cookies offered by a client. The app pushes only while it runs, only to nodes it has given a
+  sign-in, and only when the account's sign-in changed or the node reports it is signed out (see `proposals/`).
+
+### Fixed
+
+- **Mail.ru: an exit and a client signed in as one account talk to each other.** The carrier dropped every chat frame whose
+  `useridoriginal` was its own, to skip the server's echo of its own messages. That was right for anonymous visitors (one
+  id per connection) but a signed-in account has one `useridoriginal` for all its connections, so a client and an exit on
+  the same account took each other's frames for their own echo and the Session handshake never completed (`hello` sent
+  forever, no peer). The echo is now told by the connection's own editor id (`user`), learned from the auth reply by the
+  Socket.IO session id; without it (an older server) the old rule applies.
+- **Avito no longer keeps its own rate limit up.** From one address Avito answers a WebSocket handshake with 429 once there are
+  too many; the carrier's rooms retried at once, every second, which kept the limit up for good (a node held 1-4 of its 8
+  rooms). All of a process's Avito requests, the rooms' handshakes and the creation of rooms, now go through one gate: dials
+  are spaced 250 ms apart and a 429 holds every room back for a pause that doubles (5 s up to 2 min, or Retry-After, at most
+  10 min) and starts over only after a calm spell of 30 s.
+
+## [0.14.3] - 2026-10-17 (OpenFluxTeam/OpenFlux)
+
+node-install.sh still installs **node-v1.7.2** (the binary is unchanged); the script's own pin moves.
+
+### Security
+
+- **An exit no longer hands its Mail.ru sign-in to a client.** A client asks the exit for its cookies every ten minutes; the
+  exit left out only Yandex's login cookies, so a Mail.ru sign-in (now held by the exit, since Cloud wants a login to open a
+  document) went to anyone with the channel link. Mail.ru's login cookies are left out too; each device opens the document
+  with its own sign-in.
+- **A sign-in goes to the document of its own service.** The wizard filed any header under the channel's Mail.ru document
+  when it had no Yandex one; now a header with `Session_id` goes to the Yandex document, one with `Mpop` to the Mail.ru
+  document, and one with neither is refused.
+
+### Fixed
+
+- **A node with only a Mail.ru document takes its sign-in.** The installer refused a Mail.ru sign-in for a channel with no
+  Yandex document («вход в Яндекс нужен только каналу с документом Яндекса»), so a new node made with Mail.ru alone could not
+  be installed with the Mail.ru login. The check now accepts a Mail.ru document too.
+
+## [0.14.2] / node-v1.7.2 - 2026-10-17 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.7.2**.
+
+### Fixed
+
+- **Mail.ru opens its document again.** Cloud's `r7/edit` now answers an anonymous open with 401 («public is available with auth
+  only»), so a node sat in «cannot open the document» for ever. The mailru carrier asks Cloud for the CSRF token of the jar's
+  session and opens the document with it (the sign-in is the cookies in the node's cookie store); without cookies it still
+  tries anonymously. The node wizard's `cookies` now also take a Mail.ru sign-in, filed under the channel's Mail.ru document.
+
+## [0.14.1] / node-v1.7.1 - 2026-10-17 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.7.1**.
+
+### Fixed
+
+- **Avito connects again.** code.avito.ru began answering the Chrome/137-on-Mac User-Agent with HTTP 403, on creating a room
+  and on the `/sharedb` WebSocket alike, so the carrier sat in a silent reconnect loop («bad handshake»). The carrier now
+  sends a current Firefox User-Agent (as the Mail.ru carrier already does). Rooms made earlier keep working.
+
+### Added
+
+- **Moving a server's nodes to the app's core.** `provision.Conn.Upgrade` runs the installer's `upgrade` (the core the app pins
+  is installed and the running channels are restarted); the node wizard has the call `upgrade` and the mobile bridge
+  `NodeUpgrade`. A root command without a config no longer leaves a temp file on the server.
+
+## [0.14.0] / node-v1.7.0 - 2026-10-16 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.7.0**. The team's stripe groups (p1neappleXpress, `integration/team-0.12`, the CLI release v0.12.1) join the speed work.
+
+### Added
+
+- **Stripe groups** (p1neappleXpress): several carriers of one type (cups.online, Avito) or of mixed types are joined into one
+  stripe, one lane each, with per-stripe RTO and ack settings; `--lanes N` on the command line, `Lanes = N` in a `[Transport]`
+  section, a seamless single-lane Mail.ru carrier (make-before-break rotation), tuned cups and Avito defaults (8 rooms).
+- **Reno on direct.** While the traffic goes over plain TCP streams (direct) the tunnel stack opens new connections with Reno
+  instead of CUBIC: nothing is lost inside such a tunnel, and CUBIC's HyStart took the carrier's delay jitter for congestion and
+  left slow start at half the window the path takes (a single download over a real path: 6-7 MB/s with Reno against 3.5-4.5 with
+  CUBIC; on the rig +20 %). Carriers that drop packets keep CUBIC. The stack follows the carrier that is used, within a second;
+  `OPENFLUX_TCP_CC=reno|cubic` forces one.
 
 ## [0.13.0-wg.7] - 2026-10-19 (Kingofthedivanich/OpenFlux-WebGui)
 
@@ -168,10 +343,50 @@ node-install.sh installs **node-v1.6.0** from **p1neappleXpress/OpenFlux**.
 
 ### Removed
 
-- **Session bonding** (`--bonding`, `Bonding = yes`, control subtypes 0x30/0x31). Several
-  carriers will be joined by StripedTransport groups instead. A `.conf` that still says
-  `Bonding = yes` logs that it is ignored; the carriers fail over by priority. Choosing the
-  network a carrier leaves through (`Network =`) stays.
+- **Session bonding** (`--bonding`, `Bonding = yes`, control subtypes 0x30/0x31), replaced by stripe groups. A `.conf` that still
+  says `Bonding = yes` logs that it is ignored; the carriers fail over by priority. `Network =` stays.
+
+## [0.13.1] / node-v1.6.1 - 2026-10-16 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.6.1**.
+
+### Fixed
+
+- **A restarted exit is taken over by its client at once.** The restarted exit had no client and dropped everything the old
+  one sent; the client noticed only after 30 s of silence («exit silent on every carrier for 30s: handshaking again»), and
+  never when it had not yet learned that its exit answers keepalives. The exit now answers an authenticated packet that
+  arrives without a handshake with a hello (at most one a second) and the client takes it over through the candidate
+  exchange: about 4 s instead of 30 s or never.
+
+## [0.13.0] / node-v1.6.0 - 2026-10-16 (OpenFluxTeam/OpenFlux)
+
+node-install.sh installs **node-v1.6.0**. The speed work of the `speedTest` branch (log: TRANSPORT_PERFORMANCE.md).
+Nothing on the wire changed: old clients and nodes work with new ones, but the gain in the node-to-client direction
+needs the node updated (each side picks the carrier it sends on).
+
+### Added
+
+- **A live direct carrier is used first**, whatever priority the profile gives it (`transport.PreferredCarrier`). Profiles had
+  direct at 50, below every document carrier, so the traffic went through a third party while a straight path worked. When
+  direct stops reaching the peer the next carrier takes over, and takes the traffic back when it returns. `Prefer = no` in a
+  `[Transport]` section or `OPENFLUX_DIRECT_FIRST=0` turn it off. New profiles and nodes give direct priority 110.
+- **Large MTU on direct** (16000, `OPENFLUX_DIRECT_MTU`): the tunnel follows the carriers that are live; a packet that no live
+  carrier moves is refused and the stack gets an ICMP fragmentation-needed, so a connection survives the fall back to a
+  carrier with a smaller limit.
+- `OPENFLUX_PPROF` (pprof endpoint), `cmd/speedbench` and `scripts/speedtest` (the test rig), extended gVisor counters in the debug STATS line.
+
+### Changed
+
+- Much less CPU per byte on the path of every carrier: zstd is tried only where it pays (never for the repeated envelope of TLS
+  traffic on a direct carrier), packets are copied and allocated far less (pooled send buffers, the stack writes straight into the
+  session buffer), the direct carrier writes with one `writev` and reads through a buffer, a lone packet after a pause is not
+  delayed 5 ms, scrypt runs once per key. On a 1-vCPU VPS the exit needs 1.9 s of CPU for 96 MB instead of 12.9 s.
+- Queues are bounded in bytes (512 KB) and the carrier socket has `TCP_NOTSENT_LOWAT` on Linux/Android, so a download does not
+  leave megabytes in front of the next page.
+
+### Fixed
+
+- Telemost's filler frames no longer make a Session peer log that the other side speaks classic mode.
 
 ## [0.12.0] / node-v1.5.1 - 2026-10-15 (meepo161/OpenFlux)
 

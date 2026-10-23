@@ -363,42 +363,48 @@ func TestInteropCupsJSExitNativeClient(t *testing.T) {
 	deliver(t, exit, clientGot, down, 60*time.Second)
 }
 
-// A native exit's rooms, joined by a JS client. The JS transport speaks the
-// unstriped wire, so the exit is asked for the old list (CUPS_STRIPE=0); a
-// striped list is one the JS client must refuse
-// (TestInteropCupsJSClientRefusesStripedList).
+// A native exit's rooms, joined by a JS client, on both wires: the striped
+// list every exit makes since 0.7.1, and the old one (CUPS_STRIPE=0) that
+// exits older than that still hand out.
 func TestInteropCupsNativeExitJSClient(t *testing.T) {
-	fake := newCupsFake(t)
-	t.Setenv("CUPS_STRIPE", "0")
-	exit := cupsonline.NewCupsonlineTransport("", transport.DefaultConfig(), false)
-	listCh := make(chan string, 4)
-	exit.OnRoomList(func(p string) { listCh <- p })
-	exitGot := newCollector()
-	exit.Receive(exitGot.add)
-	if err := exit.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = exit.Stop() })
-	var list string
-	select {
-	case list = <-listCh:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the native exit never reported its rooms")
-	}
+	for _, stripe := range []string{"1", "0"} {
+		t.Run("stripe"+stripe, func(t *testing.T) {
+			fake := newCupsFake(t)
+			t.Setenv("CUPS_STRIPE", stripe)
+			exit := cupsonline.NewCupsonlineTransport("", transport.DefaultConfig(), false)
+			listCh := make(chan string, 4)
+			exit.OnRoomList(func(p string) { listCh <- p })
+			exitGot := newCollector()
+			exit.Receive(exitGot.add)
+			if err := exit.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = exit.Stop() })
+			var list string
+			select {
+			case list = <-listCh:
+			case <-time.After(20 * time.Second):
+				t.Fatal("the native exit never reported its rooms")
+			}
+			if _, striped, _ := transport.UnpackRooms(list); striped != (stripe == "1") {
+				t.Fatalf("list striped=%v with CUPS_STRIPE=%s", striped, stripe)
+			}
 
-	client := jsCups(t, fake, list, false)
-	clientGot := newCollector()
-	client.Receive(clientGot.add)
-	if err := client.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Stop() })
-	waitConnected(t, "native exit", exit, 20*time.Second)
-	waitConnected(t, "JS client", client, 20*time.Second)
+			client := jsCups(t, fake, list, false)
+			clientGot := newCollector()
+			client.Receive(clientGot.add)
+			if err := client.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Stop() })
+			waitConnected(t, "native exit", exit, 20*time.Second)
+			waitConnected(t, "JS client", client, 20*time.Second)
 
-	up, down := testPackets(21, 'U'), testPackets(21, 'D')
-	deliver(t, client, exitGot, up, 60*time.Second)
-	deliver(t, exit, clientGot, down, 60*time.Second)
+			up, down := testPackets(21, 'U'), testPackets(21, 'D')
+			deliver(t, client, exitGot, up, 60*time.Second)
+			deliver(t, exit, clientGot, down, 60*time.Second)
+		})
+	}
 }
 
 // A client never creates rooms, and with none to join it fails instead of
@@ -409,24 +415,6 @@ func TestInteropCupsJSClientWithoutRoomsDoesNotCreateAny(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.Stop() })
-	time.Sleep(1500 * time.Millisecond)
-	if fake.created != 0 {
-		t.Fatalf("a client created %d rooms", fake.created)
-	}
-	if state, _ := client.LastState(); state != "dead" {
-		t.Fatalf("state %q, want dead", state)
-	}
-}
-
-// A striped room list (a 0.7.1+ native exit) is not one the unstriped JS
-// transport can speak: it must fail rather than join the rooms and send the
-// exit frames it would misread.
-func TestInteropCupsJSClientRefusesStripedList(t *testing.T) {
-	fake := newCupsFake(t)
-	list := transport.PackRooms([]string{"0b3c6d1e-1111-2222-3333-444455556666"}, true)
-	client := jsCups(t, fake, list, false)
-	_ = client.Start()
 	t.Cleanup(func() { _ = client.Stop() })
 	time.Sleep(1500 * time.Millisecond)
 	if fake.created != 0 {

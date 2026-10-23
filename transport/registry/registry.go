@@ -45,6 +45,10 @@ type Options struct {
 	// apps tell the user); without it the CLI's behavior stays: the transport
 	// fails when it starts.
 	StrictDirect bool
+	// ScriptDir, when set, holds JS packages (<id>.flux, signed by the
+	// project's key) that replace the native transports of the same wire
+	// (see nativeScriptIDs): --native-scripts / NativeScripts.
+	ScriptDir string
 }
 
 // The error texts are still the ones the apps showed before this package
@@ -63,6 +67,9 @@ func New(typ, url string, params map[string]interface{}, o Options) (transport.T
 	}
 	if urls := groupURLs(url, params); urls != nil {
 		return newGroup(typ, urls, params, o)
+	}
+	if t, ok := fromScript(typ, url, params, o); ok {
+		return t, nil
 	}
 	base := o.Base
 	if o.LowMemory {
@@ -195,6 +202,7 @@ func newDirect(params map[string]interface{}, o Options) (transport.Transport, e
 		listen = dial // a profile keeps one address per transport
 	}
 	dcfg.DialAddr, dcfg.ListenAddr = dial, listen
+	dcfg.Unpreferred = !preferParam(params)
 	if o.StrictDirect {
 		if dcfg.IsExit && listen == "" {
 			return nil, errors.New("direct: не указан адрес для прослушивания (host:port)")
@@ -275,4 +283,24 @@ func withRole(params map[string]interface{}, isExit bool) map[string]interface{}
 		out["exit"] = isExit
 	}
 	return out
+}
+
+// preferParam reads a direct transport's "prefer" parameter: true unless the
+// profile says no. A profile may carry it as a bool, a number or a string
+// (true/false, yes/no, on/off, 1/0).
+func preferParam(params map[string]interface{}) bool {
+	switch v := params["prefer"].(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "no", "off", "false", "0":
+			return false
+		}
+	}
+	return true
 }

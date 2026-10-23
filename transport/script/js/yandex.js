@@ -132,6 +132,36 @@ module.exports = {
 
 };
 
+__bundleModules["lib/yandexauth.js"] = function (module, exports, require) {
+// The Yandex sign-in every Yandex transport declares in info().auth: one
+// account for yandex, vyandex, boards and telemost. The apps build their
+// Yandex account from it (passport sign-in in the built-in browser, done once
+// back on Disk) and hand a transport only the cookies listed here.
+//
+// need is per transport (a board is joined as a guest; a Telemost conference
+// needs the sign-in only to be created), so each one passes its own.
+function auth(need, cookies) {
+  var a = {
+    account: "yandex",
+    label: "Яндекс",
+    need: need,
+    signInUrl: "https://passport.yandex.ru/auth?retpath=https%3A%2F%2Fdisk.yandex.ru%2Fclient%2Fdisk",
+    homeUrl: "https://disk.yandex.ru/client",
+    // Yandex sets Session_id before the rest of the session: the sign-in
+    // counts once the page is back on Disk.
+    waitForHome: true,
+    cookieUrls: ["https://passport.yandex.ru/", "https://yandex.ru/", "https://disk.yandex.ru/", "https://docs.yandex.ru/"],
+    loginCookie: "Session_id",
+    loginNameCookie: "yandex_login",
+  };
+  if (cookies && cookies.length) a.cookies = cookies;
+  return a;
+}
+
+module.exports = { auth: auth };
+
+};
+
 // Script-transport port of transport/yandex/yandex.go +
 // transport/yandex/captcha.go. Same protocol, same constants/timings, same
 // two-tier captcha handling (PoW "showcaptchafast" solved in-band, second-
@@ -147,6 +177,7 @@ module.exports = {
 // and a failed keep-alive closing the socket so the transport reconnects.
 
 var captcha = __require("lib/captcha.js");
+var yandexauth = __require("lib/yandexauth.js");
 
 var UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0";
 var CURSOR_RE = /"cursor":"[^;]+;([^"]+)"/;
@@ -420,19 +451,32 @@ SentinelError.prototype = Object.create(Error.prototype);
 
 // ---- keepalive / message handling / write (identical shape to mailru.js) ----
 
+// Keepalives of one size at one interval are a signature that survives TLS:
+// random padding after the marker (peers look for the marker anywhere, #81).
+var KA_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function keepAliveMarker() {
+  var n = 4 + Math.floor(Math.random() * 48), pad = "";
+  for (var i = 0; i < n; i++) pad += KA_ALPHABET[Math.floor(Math.random() * KA_ALPHABET.length)];
+  return "---KA---" + pad;
+}
+
+// ... and at 0.5-1.5x the interval, not on a metronome.
 function startKeepAlive() {
-  if (keepAliveTimer) clearInterval(keepAliveTimer);
-  keepAliveTimer = setInterval(function () {
+  if (keepAliveTimer) clearTimeout(keepAliveTimer);
+  keepAliveTimer = setTimeout(function () {
+    keepAliveTimer = null;
     if (!sock) return;
     try {
-      sock.send('42["message",{"type":"cursor","cursor":"18;---KA---"}]');
+      sock.send('42["message",{"type":"cursor","cursor":"18;' + keepAliveMarker() + '"}]');
     } catch (e) {
       // Same as the native keep-alive: a write that fails means a dead
       // connection - close it so the reconnect (via onclose) happens.
       setState("reconnecting", String(e));
       try { sock.close(); } catch (e2) {}
+      return;
     }
-  }, KEEPALIVE_MS);
+    startKeepAlive();
+  }, KEEPALIVE_MS / 2 + Math.floor(Math.random() * KEEPALIVE_MS));
 }
 
 // editorActivityLoop: sends a saveChanges message at a random interval in
@@ -566,8 +610,9 @@ var Transport = {
   info: function () {
     return {
       name: "yandex",
-      version: "1.1.0",
+      version: "1.2.0",
       cookieDomain: "https://yandex.ru/",
+      auth: yandexauth.auth("always"),
       scopeCookiesToParentDomain: true,
       mtu: 0,
       reliable: false,
@@ -589,7 +634,10 @@ var Transport = {
 
   write: function (bytes) {
     if (!sock) throw new Error("yandex: not connected");
-    sock.send('42["message",{"type":"cursor","cursor":"18;' + base64.encode(bytes) + '"}]');
+    // The cursor's numeric prefix must be the packet's real length: Yandex Disk
+    // does not relay a cursor whose declared length does not match (the fixed
+    // "18" the first port sent dropped every packet; native fix 4a17023, #165).
+    sock.send('42["message",{"type":"cursor","cursor":"' + bytes.byteLength + ';' + base64.encode(bytes) + '"}]');
   },
 
   close: function () {
@@ -599,7 +647,7 @@ var Transport = {
     captchaWaitPending = false;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;
-    if (keepAliveTimer) clearInterval(keepAliveTimer);
+    if (keepAliveTimer) clearTimeout(keepAliveTimer);
     if (activityTimer) clearTimeout(activityTimer);
     activityTimer = null;
     if (sock) { try { sock.close(); } catch (e) {} }

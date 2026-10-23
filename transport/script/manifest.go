@@ -159,6 +159,14 @@ type Info struct {
 	HTTPMaxConnsPerHost int
 	HTTPMaxIdleConns    int
 	HTTPIdleConnTimeout time.Duration
+
+	// Auth is the sign-in the transport needs (see Auth); nil: none.
+	Auth *Auth
+
+	// BatchBytes asks the Session to coalesce packets into messages of up to
+	// this many bytes (transport.BatchSizeHinter): for a carrier limited by
+	// messages, not bytes (Mail.ru's chat: ~500 KB). 0: the default.
+	BatchBytes int
 }
 
 // rawInfo mirrors the JSON shape scripts return from info(); durations cross
@@ -177,6 +185,8 @@ type rawInfo struct {
 	HTTPMaxConnsPerHost        int     `json:"httpMaxConnsPerHost"`
 	HTTPMaxIdleConns           int     `json:"httpMaxIdleConns"`
 	HTTPIdleConnTimeoutMs      float64 `json:"httpIdleConnTimeoutMs"`
+	Auth                       *Auth   `json:"auth"`
+	BatchBytes                 int     `json:"batchBytes"`
 }
 
 func parseInfo(v goja.Value) (Info, error) {
@@ -211,5 +221,7 @@ func parseInfo(v goja.Value) (Info, error) {
 		HTTPMaxConnsPerHost:        raw.HTTPMaxConnsPerHost,
 		HTTPMaxIdleConns:           raw.HTTPMaxIdleConns,
 		HTTPIdleConnTimeout:        time.Duration(raw.HTTPIdleConnTimeoutMs * float64(time.Millisecond)),
+		Auth:                       raw.Auth,
+		BatchBytes:                 raw.BatchBytes,
 	}, nil
 }

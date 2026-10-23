@@ -217,6 +217,32 @@ func NodeSetCookies(channel, documentURL, cookieHeader, sudoPassword string) str
 	return result(nil)
 }
 
+// NodePushSignIn gives an installed channel's document of the sign-in's
+// service (cookieHeader with Session_id: Yandex, with Mpop: Mail.ru) the
+// owner's sign-in, leaving the channel's other document alone; a node whose
+// core has cookie-inbox takes it without a restart ("merged": true). Answers
+// like NodeShowChannel with the channel as it is now.
+func NodePushSignIn(channel, transportsJSON, cookieHeader, sudoPassword string) string {
+	conn, err := nodeConn()
+	if err != nil {
+		return failure(err, nil)
+	}
+	ts, err := nodeTransports(transportsJSON)
+	if err != nil {
+		return failure(err, nil)
+	}
+	merged, err := conn.PushSignIn(channel, ts, cookieHeader, sudoPassword)
+	if err != nil {
+		return failure(err, map[string]interface{}{"sudo": errors.Is(err, provision.ErrSudoPassword)})
+	}
+	appendLog("[NODE] Вход передан каналу " + channel)
+	info, err := conn.Show(channel, sudoPassword)
+	if err != nil {
+		return failure(err, nil)
+	}
+	return result(map[string]interface{}{"channel": info, "merged": merged})
+}
+
 // NodeShowChannel reads an installed channel: its documents, port, state
 // and encryption context, as {"ok":true,"channel":{...}} (see
 // provision.ChannelInfo). The key stays on the server.
@@ -281,6 +307,21 @@ func NodeRemove(channel, sudoPassword string) string {
 	}
 	appendLog("[NODE] Канал " + channel + " удалён с сервера")
 	return result(nil)
+}
+
+// NodeUpgrade moves every channel on the VDS to the core this build pins and
+// restarts the running ones: {"core", "restarted": [channel...]}.
+func NodeUpgrade(sudoPassword string) string {
+	conn, err := nodeConn()
+	if err != nil {
+		return failure(err, nil)
+	}
+	res, err := conn.Upgrade(sudoPassword)
+	if err != nil {
+		return failure(err, map[string]interface{}{"sudo": errors.Is(err, provision.ErrSudoPassword)})
+	}
+	appendLog("[NODE] Каналы на сервере переведены на ядро " + res.Core)
+	return result(map[string]interface{}{"core": res.Core, "restarted": res.Restarted})
 }
 
 // NodeCheckDocument tells whether the vyandex transport can use the

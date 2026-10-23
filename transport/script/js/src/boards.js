@@ -14,6 +14,7 @@
 // build it with scriptbundle, then re-sign the output.
 
 var captcha = require("./lib/captcha.js");
+var yandexauth = require("./lib/yandexauth.js");
 
 var BOARDS_BASE = "boards.yandex.ru";
 var UA = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 " +
@@ -558,8 +559,9 @@ var Transport = {
   info: function () {
     return {
       name: "boards",
-      version: "1.1.0",
+      version: "1.2.0",
       cookieDomain: "https://boards.yandex.ru/",
+      auth: yandexauth.auth("create"),
       mtu: 0,
       reliable: false,
       ordered: false,

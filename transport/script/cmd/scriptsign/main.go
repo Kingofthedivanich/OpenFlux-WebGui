@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/p1neappleXpress/OpenFlux/transport/script"
@@ -236,6 +237,15 @@ func lintPackage(m *script.PackageManifest, scriptSrc []byte, manifestPath strin
 	if info.Name != m.Name {
 		return fmt.Errorf("name mismatch: %s says %q, the script's info() says %q", manifestPath, m.Name, info.Name)
 	}
+	// The sign-in a transport needs is declared once, in info().auth; the
+	// package's manifest carries a copy so a listing can show it unrun.
+	if m.Auth != nil && !reflect.DeepEqual(m.Auth, info.Auth) {
+		return fmt.Errorf("auth mismatch: %s and the script's info() declare different sign-ins - declare it in info() only", manifestPath)
+	}
+	if err := info.Auth.Check(); err != nil {
+		return fmt.Errorf("script's info(): %w", err)
+	}
+	m.Auth = info.Auth
 	return nil
 }
 

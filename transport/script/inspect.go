@@ -26,7 +26,7 @@ func registerInspectAPI(vm *goja.Runtime) {
 	registerCrypto(vm)
 	if _, err := vm.RunString(`(function (g) {
   var deny = function () { throw new Error("not available while the transport is only being inspected"); };
-  ["http", "ws", "udp", "webrtc", "httpserver", "cookieJar", "concurrency", "emit", "setState", "raise"].forEach(function (n) {
+  ["http", "ws", "udp", "webrtc", "httpserver", "cookieJar", "concurrency", "emit", "setState", "raise", "lanes", "shared"].forEach(function (n) {
     g[n] = new Proxy(deny, { get: function () { return deny; }, apply: deny });
   });
 })(this);`); err != nil {

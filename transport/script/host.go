@@ -45,6 +45,8 @@ func registerHostAPI(vm *goja.Runtime, t *ScriptTransport) {
 	registerUDP(vm, t)
 	registerWebRTC(vm, t)
 	registerHTTPServer(vm, t)
+	registerLanes(vm, t)
+	registerShared(vm, t)
 
 	vm.Set("emit", hostEmit(vm, t))
 	vm.Set("setState", hostSetState(t))
@@ -373,7 +375,7 @@ func makeFetchFn(vm *goja.Runtime, t *ScriptTransport, client, clientNoRedirect 
 		}
 		reqURL := opts.Get("url").String()
 		var body string
-		if v := opts.Get("body"); v != nil && !goja.IsUndefined(v) {
+		if v := opts.Get("body"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
 			body = v.String()
 		}
 		headers := map[string]string{}
@@ -497,15 +499,21 @@ func registerWS(vm *goja.Runtime, t *ScriptTransport) {
 		utils.SafeGo("script."+t.name+".ws-dial", func() {
 			dialer := websocket.Dialer{
 				HandshakeTimeout:  15 * time.Second,
-				NetDialContext:    t.dialer().DialContext,
+				NetDialContext:    t.dialContext,
 				EnableCompression: compress,
 			}
 			conn, resp, err := dialer.Dial(reqURL, headers)
 			t.loop.RunOnLoop(func(vm *goja.Runtime) {
 				if err != nil {
-					status := 0
+					status, retry := 0, ""
 					if resp != nil {
 						status = resp.StatusCode
+						retry = resp.Header.Get("Retry-After")
+					}
+					if retry != "" {
+						// a limit says when to come back (Avito's 429)
+						_ = reject(vm.NewGoError(fmt.Errorf("ws dial (http %d, retry-after %s): %w", status, retry, err)))
+						return
 					}
 					_ = reject(vm.NewGoError(fmt.Errorf("ws dial (http %d): %w", status, err)))
 					return
@@ -667,9 +675,7 @@ func hostEmit(vm *goja.Runtime, t *ScriptTransport) func(goja.FunctionCall) goja
 			utils.Debugf("[SCRIPT:%s] emit: %v", t.name, err)
 			return goja.Undefined()
 		}
-		decoded := append([]byte(nil), raw...)
-		t.RecordReceive(len(decoded))
-		utils.SafeGo("script."+t.name+".recv", func() { t.CallReceive(decoded) })
+		t.deliverOrdered(append([]byte(nil), raw...))
 		return goja.Undefined()
 	}
 }
@@ -736,6 +742,21 @@ func hostRaise(vm *goja.Runtime, t *ScriptTransport) func(goja.FunctionCall) goj
 			if rooms, _ := payload["rooms"].(string); rooms != "" {
 				t.setRoomList(rooms)
 			}
+		}
+		if kind == "authRequired" {
+			// The apps read this line (ConnectionNarrative): the transport
+			// needs the sign-in it declares in info().auth.
+			account := str("account")
+			label := account
+			if a := t.info.Auth; a != nil {
+				if account == "" {
+					account = a.Account
+				}
+				if a.Label != "" {
+					label = a.Label
+				}
+			}
+			utils.Infof("[SCRIPT:%s] sign-in required: account=%s label=%q: %s", t.name, account, label, reason)
 		}
 		if h := t.eventHandler(); h != nil {
 			h(kind, payload)

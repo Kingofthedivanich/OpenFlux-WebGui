@@ -55,7 +55,7 @@ func TestNodeWizardProtocolLines(t *testing.T) {
 
 func TestNodeWizardNeedsConnection(t *testing.T) {
 	w := newNodeWizard()
-	for _, m := range []string{"plan", "apply", "setCookies", "remove", "showChannel", "setTransports"} {
+	for _, m := range []string{"plan", "apply", "setCookies", "pushSignIn", "remove", "showChannel", "setTransports"} {
 		r := wizardCall(t, w, m, map[string]string{"channel": "c1"})
 		if r["ok"] != false || r["error"] != "нет подключения к серверу" {
 			t.Fatalf("%s: %v", m, r)
